@@ -1,0 +1,18 @@
+# Sample configuration file — copy this file to config.yaml and fill in real values.
+# config.yaml is listed in .gitignore and will not be tracked by git.
+
+eitaa:
+  channel: Merajyan          # channel username (without the @)
+  poll_interval_seconds: 300 # how often to check, in seconds (default: 5 minutes)
+
+# Target site — not configured yet. Will be filled in after the site type is decided.
+site:
+  type: ""                   # wordpress | custom | ...
+  url: ""                    # https://example.com
+  auth:
+    username: ""
+    app_password: ""         # WordPress Application Password
+
+storage:
+  seen_file: data/seen.json
+  archive_file: data/messages.jsonl
