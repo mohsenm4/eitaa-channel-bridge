@@ -1,13 +1,10 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-venv/
-env/
-.venv/
-*.egg-info/
+# Go
+bin/
+dist/
+*.exe
+*.test
+*.out
+coverage.out
 
 # Config with secrets
 config.yaml
@@ -17,6 +14,8 @@ config.yml
 # Runtime state and archives
 data/seen.json
 data/messages.jsonl
+data/last_dump.json
+data/raw.html
 data/*.log
 data/media/
 

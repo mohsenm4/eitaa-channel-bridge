@@ -1,6 +1,6 @@
 # Eitaa Channel Bridge
 
-> A small bot that automatically reads every new message published in the Eitaa channel of **Meraj Cultural & Religious Institute** ([@Merajyan](https://eitaa.com/Merajyan)) and republishes it on a target website in a defined format.
+> A small bot that reads every new message published in the Eitaa channel of **Meraj Cultural & Religious Institute** ([@Merajyan](https://eitaa.com/Merajyan)) and republishes it on a target website in a defined format.
 
 ---
 
@@ -26,98 +26,148 @@ This bot acts like an **automated reporter**:
 
 | Part | Status | Notes |
 |---|---|---|
-| **Reading messages from the Eitaa channel** | ✅ Feasible | The channel is public and the `eitaa.com/Merajyan` page contains the full message text in HTML. Each message has a clear ID (`/s/Merajyan/2518`) which is ideal for distinguishing "seen" vs. "new". |
-| **Publishing to the site** | ⚠️ Depends | Depends on the target site — if it is WordPress, the REST API makes it straightforward; if it is a custom site, it needs an endpoint. (More info required.) |
-| **Scheduling** | ✅ Feasible | Can be run via `cron` on a server or on the same Mac. |
+| **Reading messages from the Eitaa channel** | Yes | The channel is public and `eitaa.com/Merajyan` returns the full message stream as HTML. Each message has a stable ID (e.g. `/Merajyan/2518`) which is ideal for distinguishing "seen" vs. "new". |
+| **Publishing to the site** | Depends | Depends on the target site — if it is WordPress, the REST API makes it straightforward; if it is a custom site, it needs an endpoint. (More info required.) |
+| **Scheduling** | Yes | Can be run via `cron` / `launchd` / `systemd`, or just `bridge poll` in the foreground. |
 
 **Conclusion:** The whole project is doable; only the "target site" part needs more information (see section 5).
 
 ---
 
-## 3) Proposed Architecture
+## 3) Architecture
 
-Project components:
+**Language:** Go — the parser uses only the standard library plus `golang.org/x/net/html`, so the bridge ships as a single static binary with no runtime dependencies.
 
 ```
 eitaa-channel-bridge/
-├── README.md                  ← this file
+├── README.md
 ├── .gitignore
-├── requirements.txt           ← Python dependencies
-├── config.yaml.example        ← sample configuration (no secrets)
-├── bridge/
-│   ├── __init__.py
-│   ├── eitaa_reader.py        ← reads and parses Eitaa channel HTML
-│   ├── state.py               ← tracks the last seen message ID
-│   ├── formatter.py           ← converts messages to the target site format
-│   ├── publisher.py           ← posts to the site (WordPress/…)
-│   └── main.py                ← main entry point
-├── data/
-│   ├── seen.json              ← IDs of seen messages (ignored)
-│   └── messages.jsonl         ← raw message archive (ignored)
-└── tests/
+├── go.mod
+├── go.sum
+├── config.yaml.example
+├── cmd/
+│   └── bridge/
+│       └── main.go              ← CLI entry point (dump, poll)
+├── internal/
+│   ├── eitaa/
+│   │   └── reader.go            ← fetches and parses the channel HTML
+│   └── state/
+│       └── state.go             ← tracks seen message IDs
+└── data/
+    ├── seen.json                ← IDs of processed messages (gitignored)
+    ├── messages.jsonl           ← raw message archive (gitignored)
+    ├── last_dump.json           ← last dump pretty JSON (gitignored)
+    └── raw.html                 ← last raw HTML response (gitignored)
 ```
 
-**Suggested language:** Python — because of its mature libraries for HTML parsing and API calls.
+---
+
+## 4) Commands
+
+Build:
+
+```sh
+go build -o bin/bridge ./cmd/bridge
+```
+
+### `bridge dump` — one-shot inspection
+
+Fetches the channel once, writes the raw HTML and parsed JSON to `data/`, and prints a summary of every message it found. Use this to inspect the structure of Eitaa messages and verify the parser.
+
+```sh
+go run ./cmd/bridge dump
+# or with a different channel
+go run ./cmd/bridge dump --channel SomeOtherChannel --data-dir ./out
+```
+
+Sample output:
+
+```
+channel:   @Merajyan
+messages:  6
+raw html:  data/raw.html
+pretty:    data/last_dump.json
+jsonl:     data/messages.jsonl
+
+  #2518  2026-04-07 06:01  views=1  photos=3  | موسسه_معراج #گزارش_تصویری …
+  #2521  2026-04-20 10:26  views=1  photos=2  | موسسه_معراج #گزارش_تصویری …
+  …
+```
+
+### `bridge poll` — continuous mode
+
+Fetches on an interval, appends only new messages to `data/messages.jsonl`, and persists the seen-set in `data/seen.json`. Safe to stop and restart — already-published messages will not be re-sent.
+
+```sh
+go run ./cmd/bridge poll --interval 5m
+```
 
 ---
 
-## 4) Message Format
+## 5) Message format (parsed)
 
-For each message bridged from Eitaa to the site, these fields are available:
+Every message dumped to JSON has these fields:
 
-| Field | Source | Example |
+| Field | Type | Notes |
 |---|---|---|
-| `id` | message URL | `2518` |
-| `text` | message text | "Weekly schedule 🟩 Creativity | Play" |
-| `date` | timestamp | `1769472060` |
-| `views` | view counter | `42 views` |
-| `link` | message link on Eitaa | `https://eitaa.com/Merajyan/2518` |
-| `media` | image/file (if any) | file URL |
+| `id` | int | the numeric message ID inside the channel |
+| `channel` | string | channel username, without `@` |
+| `link` | string | canonical URL on eitaa.com |
+| `author` | string | post author / owner name |
+| `forwarded_from` | string | only set when the message was forwarded |
+| `date` | RFC3339 timestamp | from the `<time datetime=…>` attribute |
+| `views` | int | view counter |
+| `text` | string | plain text with newlines preserved |
+| `text_html` | string | inner HTML of the message bubble (hashtags as `<a>` links) |
+| `photos` | string[] | URLs of attached photos (empty for text-only posts) |
 
-**The final post format on the site** is not yet defined — it will be specified in the next discussion.
+The **final post format on the target site** is not yet defined — it will be specified after the questions in section 6 are answered.
 
 ---
 
-## 5) Things still to be decided
+## 6) Things still to be decided
 
-Before writing the code, these questions need answers:
+Before writing the publisher, these questions need answers:
 
-### a) About the target site:
+**a) About the target site**
+
 - [ ] What platform is the site running on? (WordPress, Joomla, custom, …)
 - [ ] Site URL?
 - [ ] Does it expose an API? (e.g. WordPress REST API)
 - [ ] What is the authentication method for publishing posts? (Application Password, Token, …)
 
-### b) About the post format on the site:
+**b) About the post format**
+
 - [ ] What type of content should each Eitaa message become? (Post, Page, Custom Post Type)
 - [ ] Should it have a specific category or tag?
 - [ ] Where should the post title come from? (Eitaa messages do not have an independent title — the first line or the date can be used.)
 - [ ] If the message contains an image or file, how should it be transferred?
 
-### c) About execution:
+**c) About execution**
+
 - [ ] How often should it check? (default: 5 minutes)
 - [ ] Which server should run it? (your Mac / a VPS / …)
 
 ---
 
-## 6) Known Limitations
+## 7) Known Limitations
 
-- **Unofficial:** Eitaa does not provide an official API for reading messages. This approach depends on the HTML structure of the Eitaa site; if Eitaa ever changes its site structure, the code will need updates.
-- **Public channels only:** This approach does not work on private groups or channels.
-- **Media:** Downloading images/files from Eitaa and re-uploading them to the site requires extra work.
+- **Unofficial:** Eitaa does not provide an official API for reading messages. This approach depends on the HTML structure of the Eitaa site; if Eitaa changes its markup, the parser will need updates.
+- **Public channels only:** Private groups and channels are not accessible.
+- **Media:** Downloading images/files from Eitaa and re-uploading them to the target site requires extra work and is not implemented yet.
 - **Rate limit:** Sending too many requests too quickly may get our IP temporarily blocked. The default of one check every 5 minutes is conservative.
 
 ---
 
-## 7) Next Steps
+## 8) Next Steps
 
-1. ✅ Confirm that the channel is readable.
-2. ✅ Set up the project skeleton (this commit).
-3. ⏳ Answer the questions in section 5 (target site, format).
-4. ⏳ Write `eitaa_reader.py` and test reading messages.
-5. ⏳ Write `publisher.py` tailored to the target site.
-6. ⏳ Connect the two and run end-to-end tests.
-7. ⏳ Set up on cron.
+1. Confirm that the channel is readable.
+2. Set up the project skeleton.
+3. Implement the parser (`internal/eitaa`) and validate against the live channel (`bridge dump`).
+4. Answer the questions in section 6 (target site, format).
+5. Implement `internal/publisher` for the chosen site.
+6. Wire `bridge poll` into the publisher and run end-to-end tests.
+7. Deploy on cron / launchd / systemd.
 
 ---
 
