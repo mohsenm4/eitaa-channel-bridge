@@ -19,7 +19,6 @@ import (
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/utils"
 )
 
-// runner holds everything one bridge process needs.
 type runner struct {
 	cfg    *config.Config
 	log    *slog.Logger
@@ -50,8 +49,9 @@ func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
 
 func (r *runner) Close() error { return r.pub.Close() }
 
-// processBatch routes, filters and publishes a batch of messages.
-// Returns how many messages were processed (published OR skipped).
+// processBatch routes/filters/publishes msgs and returns how many were handled
+// (published or deliberately skipped). Publish failures are NOT counted so the
+// next tick retries them.
 func (r *runner) processBatch(ctx context.Context, msgs []eitaa.Message) int {
 	processed := 0
 	for _, m := range msgs {
@@ -83,7 +83,6 @@ func (r *runner) processBatch(ctx context.Context, msgs []eitaa.Message) int {
 	return processed
 }
 
-// tick fetches the latest page and processes any new messages it contains.
 func (r *runner) tick(ctx context.Context) {
 	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -102,9 +101,7 @@ func (r *runner) tick(ctx context.Context) {
 	}
 }
 
-// backfill walks Eitaa's ?before= pagination backwards until either
-// max historical messages have been collected or the channel has no
-// older posts. Each page is processed in chronological order.
+// backfill walks ?before= pagination backwards up to max messages.
 func (r *runner) backfill(ctx context.Context, max int) {
 	r.log.Info("backfill start", "max", max)
 
@@ -145,7 +142,6 @@ func (r *runner) backfill(ctx context.Context, max int) {
 	r.log.Info("backfill done", "fetched", len(collected), "processed", n)
 }
 
-// Run does optional backfill, then polls forever until ctx is cancelled.
 func (r *runner) Run(ctx context.Context) {
 	if r.store.Count(r.cfg.Source.Channel) == 0 && r.cfg.Source.BackfillMax > 0 {
 		r.backfill(ctx, r.cfg.Source.BackfillMax)

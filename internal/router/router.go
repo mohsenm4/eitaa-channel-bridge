@@ -1,12 +1,5 @@
-// Package router classifies a parsed Eitaa message into a site category
-// and extracts the display fields (title, subtitle, event date) that the
-// channel posting guide describes.
-//
-// The list of categories and the default-bucket policy come from
-// config.Publishing; only the marker prefixes (🔻 / 🟩 / 🗓) and the
-// fallback-title heuristics live in code.
-//
-// See docs/posting-guide.md for the rules this implements.
+// Package router classifies a parsed Eitaa message and extracts display
+// fields (title, subtitle, event date). See docs/posting-guide.md.
 package router
 
 import (
@@ -18,16 +11,15 @@ import (
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/eitaa"
 )
 
-// Routed is an Eitaa message with site-routing metadata attached.
 type Routed struct {
 	eitaa.Message
 
-	Category   string   `json:"category,omitempty"`    // machine slug; empty = unclassified
-	CategoryFa string   `json:"category_fa,omitempty"` // Persian label for UI
-	Title      string   `json:"title"`                 // display title
-	Subtitle   string   `json:"subtitle,omitempty"`    // optional subtitle
-	EventDate  string   `json:"event_date,omitempty"`  // Persian date string (free-form)
-	Hashtags   []string `json:"hashtags"`              // every #tag found in the message
+	Category   string   `json:"category,omitempty"`
+	CategoryFa string   `json:"category_fa,omitempty"`
+	Title      string   `json:"title"`
+	Subtitle   string   `json:"subtitle,omitempty"`
+	EventDate  string   `json:"event_date,omitempty"`
+	Hashtags   []string `json:"hashtags"`
 }
 
 // Marker prefixes the channel posting guide tells admins to use.
@@ -39,18 +31,13 @@ const (
 	titleMaxLen = 80
 )
 
-// Router classifies messages for a single channel.
 type Router struct {
 	channelNameRe *regexp.Regexp
 	categories    []config.Category
 	defaultCat    *config.Category
 }
 
-// New builds a Router for the given channel and category set.
-// Categories come from config; the channel name is used to recognise
-// self-reference lines when picking a fallback title.
 func New(channel string, categories []config.Category, defaultCat *config.Category) *Router {
-	// Skip lines that are just the channel handle or "کانال رسمی <name>".
 	pattern := fmt.Sprintf(`@%s|^%s$|کانال رسمی`, regexp.QuoteMeta(channel), regexp.QuoteMeta(channel))
 	return &Router{
 		channelNameRe: regexp.MustCompile("(?i)" + pattern),
@@ -59,7 +46,6 @@ func New(channel string, categories []config.Category, defaultCat *config.Catego
 	}
 }
 
-// Route classifies a single message.
 func (r *Router) Route(msg eitaa.Message) Routed {
 	out := Routed{Message: msg}
 	out.Hashtags = extractHashtags(msg.Text)
@@ -77,7 +63,6 @@ func (r *Router) Route(msg eitaa.Message) Routed {
 	return out
 }
 
-// RouteAll runs Route over a slice of messages.
 func (r *Router) RouteAll(msgs []eitaa.Message) []Routed {
 	out := make([]Routed, len(msgs))
 	for i, m := range msgs {
@@ -86,8 +71,7 @@ func (r *Router) RouteAll(msgs []eitaa.Message) []Routed {
 	return out
 }
 
-// pickCategory returns the first matching category, or nil if none match.
-// Order in the config determines priority when a post carries multiple tags.
+// pickCategory returns the first match; config order is the tie-breaker.
 func (r *Router) pickCategory(tags []string) *config.Category {
 	for _, t := range tags {
 		for i := range r.categories {

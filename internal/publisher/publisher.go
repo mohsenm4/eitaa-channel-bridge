@@ -1,9 +1,4 @@
-// Package publisher defines the Publisher interface and the
-// implementations that deliver routed messages to a destination.
-//
-// All publishers operate on a router.Routed value (the normalized
-// message shape) so they have direct access to title, category,
-// subtitle, event date, and hashtags — not just raw text.
+// Package publisher delivers routed messages to a destination (file, HTML site, WordPress).
 package publisher
 
 import (
@@ -15,20 +10,14 @@ import (
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/router"
 )
 
-// Publisher delivers a single routed message to a target.
+// Publisher delivers a single routed message. A non-nil Publish error
+// keeps the message un-delivered and triggers a retry on the next tick.
 type Publisher interface {
-	// Name returns a short identifier for logs (e.g. "html:site").
 	Name() string
-	// Publish delivers msg. A non-nil error means the message was NOT
-	// delivered and the bridge will retry it on the next tick.
 	Publish(ctx context.Context, msg router.Routed) error
-	// Close releases any resources held by the publisher.
 	Close() error
 }
 
-// New builds the Publisher described by cfg. The logger is used by
-// publishers that need to surface non-fatal warnings (asset extraction,
-// stub notices, corrupt state files, etc.).
 func New(cfg config.Target, log *slog.Logger) (Publisher, error) {
 	if log == nil {
 		log = slog.Default()
@@ -45,15 +34,8 @@ func New(cfg config.Target, log *slog.Logger) (Publisher, error) {
 	}
 }
 
-// ShouldPublish applies the publishing rules from config to a routed
-// message and returns (publish, reason). The reason is suitable for
-// human-readable logs.
-//
-// A message is published if and only if:
-//   - none of its hashtags is in publishing.skip_hashtags, AND
-//   - the router assigned it a category (either by matching a
-//     publishing.categories entry or by falling back to
-//     publishing.default_category).
+// ShouldPublish returns (publish?, log-friendly reason). A message is
+// published iff no hashtag is in SkipHashtags and Category is non-empty.
 func ShouldPublish(p config.Publishing, msg router.Routed) (bool, string) {
 	tags := tagSet(msg.Hashtags)
 	for _, skip := range p.SkipHashtags {

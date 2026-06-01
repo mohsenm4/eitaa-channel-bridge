@@ -7,13 +7,9 @@ import (
 	"strings"
 )
 
-// LogLevelEnv is the environment variable consulted by NewLogger.
+// LogLevelEnv is the env var read by NewLogger (debug|info|warn|error).
 const LogLevelEnv = "EITAA_BRIDGE_LOG_LEVEL"
 
-// NewLogger returns a slog logger that writes to stderr with a compact
-// "t=HH:MM:SS" timestamp. The log level is taken from the
-// EITAA_BRIDGE_LOG_LEVEL env var (debug|info|warn|error) and defaults
-// to INFO.
 func NewLogger() *slog.Logger {
 	level := slog.LevelInfo
 	if s := os.Getenv(LogLevelEnv); s != "" {
@@ -40,7 +36,6 @@ func NewLogger() *slog.Logger {
 	return slog.New(h)
 }
 
-// Fatal prints an error message to stderr and exits with status 1.
 func Fatal(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "error: "+format+"\n", a...)
 	os.Exit(1)

@@ -1,17 +1,6 @@
-// Command bridge reads messages from an Eitaa channel, classifies them
-// according to the posting guide, filters them by the configured
-// publishing rules, and delivers the rest to the configured target.
-//
-// Subcommands:
-//
-//	bridge dump   — fetch the channel once, parse + route every message
-//	                and write JSON to data/. No publishing.
-//	bridge run    — poll the channel on source.poll_interval and publish
-//	                each new message that matches the publishing rules.
-//
-// Configuration is read entirely from environment variables, with a
-// .env file in the working directory as a convenience for local
-// development. See .env.example for the full schema.
+// Command bridge reads an Eitaa channel and republishes filtered posts.
+// Subcommands: dump (fetch once, no publish) and run (poll + publish).
+// Config: EITAA_BRIDGE_* env vars; see .env.example.
 package main
 
 import (

@@ -16,8 +16,6 @@ import (
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/utils"
 )
 
-// runDump fetches the channel once and writes raw HTML + routed JSON
-// to the storage directory. It does not publish or mutate the seen-set.
 func runDump(log *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("dump", flag.ExitOnError)
 	envPath := fs.String("env", defaultEnvPath, "path to .env file (optional)")

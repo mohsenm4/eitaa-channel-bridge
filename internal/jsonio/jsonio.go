@@ -1,5 +1,4 @@
-// Package jsonio writes JSON and JSON-Lines files to disk, creating
-// parent directories on demand.
+// Package jsonio writes JSON and JSON-Lines files, creating parent dirs on demand.
 package jsonio
 
 import (
@@ -8,7 +7,6 @@ import (
 	"path/filepath"
 )
 
-// WriteIndented marshals v with two-space indentation and writes it to path.
 func WriteIndented(path string, v any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -20,8 +18,6 @@ func WriteIndented(path string, v any) error {
 	return os.WriteFile(path, b, 0o644)
 }
 
-// WriteJSONL writes a slice of values as JSON Lines, one per line.
-// The file is truncated on each call.
 func WriteJSONL[T any](path string, items []T) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -40,7 +36,6 @@ func WriteJSONL[T any](path string, items []T) error {
 	return nil
 }
 
-// Append appends a single value as one JSON Line to path.
 func Append[T any](path string, v T) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

@@ -13,13 +13,10 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// EnvPrefix is the prefix shared by every configuration variable.
 const EnvPrefix = "EITAA_BRIDGE"
 
-// DefaultEnvPath is the .env file Load() consults when no path is given.
 const DefaultEnvPath = ".env"
 
-// Config is the fully resolved configuration.
 type Config struct {
 	Source     Source
 	Publishing Publishing
@@ -27,30 +24,26 @@ type Config struct {
 	Storage    Storage
 }
 
-// Source describes the channel to read from.
 type Source struct {
 	Channel      string
 	PollInterval time.Duration
 	BackfillMax  int
 }
 
-// Publishing controls which messages get forwarded and how they are
-// classified for the target.
 type Publishing struct {
 	Categories   []Category
 	Default      *Category
 	SkipHashtags []string
 }
 
-// Category maps a hashtag to a site category.
 type Category struct {
 	Hashtag string
 	Slug    string
 	Label   string
 }
 
-// Target describes where messages should be published. Only the
-// block matching Type is read.
+// Target describes where messages should be published.
+// Only the block matching Type is read.
 type Target struct {
 	Type      string
 	File      FileTarget
@@ -58,18 +51,15 @@ type Target struct {
 	WordPress WordPressTarget
 }
 
-// FileTarget appends each message as a JSON line to Path.
 type FileTarget struct {
 	Path string
 }
 
-// HTMLTarget generates a static site under OutputDir.
 type HTMLTarget struct {
 	OutputDir string
 	SiteTitle string
 }
 
-// WordPressTarget posts to a WordPress site (not yet implemented).
 type WordPressTarget struct {
 	URL         string
 	Username    string
@@ -78,23 +68,19 @@ type WordPressTarget struct {
 	Status      string
 }
 
-// Storage holds on-disk paths for runtime state.
 type Storage struct {
 	SeenFile    string
 	ArchiveFile string
 }
 
-// Known target types.
 const (
 	TargetFile      = "file"
 	TargetHTML      = "html"
 	TargetWordPress = "wordpress"
 )
 
-// Load reads environment variables, optionally seeded by a .env file.
-// Pass "" to skip the .env file. A missing .env file is not an error;
-// any other read error is reported. Real environment variables always
-// take precedence over .env values.
+// Load reads env vars, optionally seeded by a .env file (pass "" to skip).
+// A missing .env is fine; real env vars always win over .env values.
 func Load(envPath string) (*Config, error) {
 	if envPath != "" {
 		if err := godotenv.Load(envPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -148,9 +134,7 @@ func Load(envPath string) (*Config, error) {
 	return &cfg, nil
 }
 
-// MustLoad is Load with CLI-style exit on error. If the env file path
-// is empty it tries DefaultEnvPath (".env" in the current directory)
-// silently — a missing .env is fine, missing required values are not.
+// MustLoad is Load with CLI-style exit on error.
 func MustLoad(envPath string) *Config {
 	if envPath == "" {
 		envPath = DefaultEnvPath
@@ -163,8 +147,6 @@ func MustLoad(envPath string) *Config {
 	}
 	return cfg
 }
-
-// --- env-var lookup helpers ---
 
 func envStr(key string) string {
 	return strings.TrimSpace(os.Getenv(EnvPrefix + "_" + key))
@@ -193,8 +175,6 @@ func envDuration(key string) (time.Duration, error) {
 	}
 	return d, nil
 }
-
-// --- list / nested-value parsers ---
 
 func parseCommaList(s string) []string {
 	if s == "" {
@@ -250,8 +230,6 @@ func parseDefaultCategory(s string) (*Category, error) {
 		Label: strings.TrimSpace(fields[1]),
 	}, nil
 }
-
-// --- defaults and validation ---
 
 func (c *Config) applyDefaults() {
 	if c.Source.PollInterval == 0 {
