@@ -12,12 +12,7 @@ coverage.out
 .env.*.local
 
 # Runtime state and archives
-data/seen.json
-data/*.jsonl
-data/last_dump.json
-data/raw.html
-data/*.log
-data/media/
+/data
 
 # Generated static site (HTML publisher output)
 site/
@@ -30,3 +25,5 @@ site/
 
 # OS
 Thumbs.db
+
+**debug_bin**
