@@ -19,8 +19,31 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/go-viper/mapstructure/v2"
+	"github.com/spf13/viper"
 )
+
+// EnvPrefix is the prefix for every environment-variable override.
+// Example: EITAA_BRIDGE_SOURCE_CHANNEL overrides source.channel.
+const EnvPrefix = "EITAA_BRIDGE"
+
+// envBindings lists every config key that may be overridden by env.
+// Nested keys use "." here and "_" in the env var name.
+var envBindings = []string{
+	"source.channel",
+	"source.poll_interval",
+	"target.type",
+	"target.html.output_dir",
+	"target.html.site_title",
+	"target.file.path",
+	"target.wordpress.url",
+	"target.wordpress.username",
+	"target.wordpress.app_password",
+	"target.wordpress.post_type",
+	"target.wordpress.status",
+	"storage.seen_file",
+	"storage.archive_file",
+}
 
 // Config is the parsed configuration with defaults applied.
 type Config struct {
@@ -97,23 +120,51 @@ const (
 	TargetWordPress = "wordpress"
 )
 
-// Load reads, parses, validates, and defaults the YAML config at path.
+// Load reads YAML from path, applies environment overrides, and returns
+// a validated config.
+//
+// Env vars under EITAA_BRIDGE_ override file values, with "_" between
+// nested keys — e.g. EITAA_BRIDGE_SOURCE_CHANNEL=othername replaces
+// source.channel, EITAA_BRIDGE_TARGET_WORDPRESS_APP_PASSWORD overrides
+// the WordPress credential.
+//
+// A missing file is reported with os.ErrNotExist via the wrapped error,
+// so callers can distinguish it.
 func Load(path string) (*Config, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
+	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
-	var cfg Config
-	dec := yaml.NewDecoder(strings.NewReader(string(b)))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
+	v := viper.New()
+	v.SetConfigFile(path)
+	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	v.SetEnvPrefix(EnvPrefix)
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+	for _, key := range envBindings {
+		_ = v.BindEnv(key)
+	}
+	var cfg Config
+	if err := v.Unmarshal(&cfg, useYAMLTags); err != nil {
+		return nil, fmt.Errorf("decode config %s: %w", path, err)
 	}
 	cfg.applyDefaults()
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// useYAMLTags tells mapstructure to read the same struct tags that
+// describe the YAML file, so we avoid duplicating each tag.
+// It also enables the standard hooks for time.Duration and string slices.
+func useYAMLTags(dc *mapstructure.DecoderConfig) {
+	dc.TagName = "yaml"
+	dc.DecodeHook = mapstructure.ComposeDecodeHookFunc(
+		mapstructure.StringToTimeDurationHookFunc(),
+		mapstructure.StringToSliceHookFunc(","),
+	)
 }
 
 func (c *Config) applyDefaults() {
