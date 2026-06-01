@@ -1,5 +1,4 @@
-// Package state persists the set of message IDs that have already been
-// processed, so we never republish the same message twice.
+// Package state persists processed message IDs per channel.
 package state
 
 import (
@@ -12,13 +11,12 @@ import (
 	"sort"
 )
 
-// Store is a JSON-backed set of seen message IDs, keyed by channel.
 type Store struct {
 	path string
 	data map[string]map[int]bool
 }
 
-// Load reads the store from disk. A missing file is treated as empty.
+// Load reads the store; a missing file is treated as empty.
 func Load(path string) (*Store, error) {
 	s := &Store{path: path, data: map[string]map[int]bool{}}
 	b, err := os.ReadFile(path)
@@ -45,12 +43,14 @@ func Load(path string) (*Store, error) {
 	return s, nil
 }
 
-// Seen reports whether a given message ID has already been processed.
 func (s *Store) Seen(channel string, id int) bool {
 	return s.data[channel] != nil && s.data[channel][id]
 }
 
-// Mark records a message ID as seen.
+func (s *Store) Count(channel string) int {
+	return len(s.data[channel])
+}
+
 func (s *Store) Mark(channel string, id int) {
 	if s.data[channel] == nil {
 		s.data[channel] = map[int]bool{}
@@ -58,7 +58,7 @@ func (s *Store) Mark(channel string, id int) {
 	s.data[channel][id] = true
 }
 
-// Save writes the store atomically.
+// Save writes the store atomically (write-then-rename).
 func (s *Store) Save() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)

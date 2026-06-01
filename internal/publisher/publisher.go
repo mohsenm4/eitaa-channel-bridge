@@ -1,37 +1,58 @@
-// Package publisher defines the Publisher interface and provides
-// implementations that deliver parsed Eitaa messages to different targets.
-//
-// Today only the File publisher is implemented. When the target site
-// (WordPress, etc.) is decided, add a new file in this package and
-// extend the New factory below.
+// Package publisher delivers routed messages to a destination (file, HTML site, WordPress).
 package publisher
 
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/config"
-	"github.com/mohsenm4/eitaa-channel-bridge/internal/eitaa"
+	"github.com/mohsenm4/eitaa-channel-bridge/internal/router"
 )
 
-// Publisher delivers a single message to a target.
-// Implementations may be called concurrently and must guard their own state.
+// Publisher delivers a single routed message. A non-nil Publish error
+// keeps the message un-delivered and triggers a retry on the next tick.
 type Publisher interface {
-	// Name returns a short identifier for logs (e.g. "file:data/published.jsonl").
 	Name() string
-	// Publish delivers msg. A non-nil error means the message was NOT delivered
-	// and the bridge will retry it on the next tick.
-	Publish(ctx context.Context, msg eitaa.Message) error
-	// Close releases any resources held by the publisher.
+	Publish(ctx context.Context, msg router.Routed) error
 	Close() error
 }
 
-// New builds the Publisher described by cfg.
-func New(cfg config.Target) (Publisher, error) {
+func New(cfg config.Target, log *slog.Logger) (Publisher, error) {
+	if log == nil {
+		log = slog.Default()
+	}
 	switch cfg.Type {
 	case config.TargetFile:
 		return NewFile(cfg.File.Path)
+	case config.TargetHTML:
+		return NewHTML(cfg.HTML, log)
+	case config.TargetWordPress:
+		return NewWordPress(cfg.WordPress, log), nil
 	default:
 		return nil, fmt.Errorf("unknown target type %q", cfg.Type)
 	}
+}
+
+// ShouldPublish returns (publish?, log-friendly reason). A message is
+// published iff no hashtag is in SkipHashtags and Category is non-empty.
+func ShouldPublish(p config.Publishing, msg router.Routed) (bool, string) {
+	tags := tagSet(msg.Hashtags)
+	for _, skip := range p.SkipHashtags {
+		if tags[skip] {
+			return false, "skip-hashtag #" + skip
+		}
+	}
+	if msg.Category == "" {
+		return false, "no matching category"
+	}
+	return true, "category " + msg.Category
+}
+
+func tagSet(tags []string) map[string]bool {
+	out := make(map[string]bool, len(tags))
+	for _, t := range tags {
+		out[t] = true
+	}
+	return out
 }

@@ -6,18 +6,16 @@ dist/
 *.out
 coverage.out
 
-# Config with secrets
-config.yaml
-config.yml
+# Configuration with secrets
 .env
+.env.local
+.env.*.local
 
 # Runtime state and archives
-data/seen.json
-data/*.jsonl
-data/last_dump.json
-data/raw.html
-data/*.log
-data/media/
+/data
+
+# Generated static site (HTML publisher output)
+site/
 
 # IDE
 .vscode/
@@ -27,3 +25,5 @@ data/media/
 
 # OS
 Thumbs.db
+
+**debug_bin**

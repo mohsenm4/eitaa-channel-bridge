@@ -1,8 +1,4 @@
 // Package eitaa fetches and parses the public web view of an Eitaa channel.
-//
-// Eitaa renders channel posts on https://eitaa.com/<channel> as a stream of
-// .etme_widget_message_wrap blocks. This package extracts the fields we need
-// (id, text, author, date, views, link, photos) from that HTML.
 package eitaa
 
 import (
@@ -23,7 +19,6 @@ const (
 	defaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
 )
 
-// Message is a single post parsed from the channel page.
 type Message struct {
 	ID            int       `json:"id"`
 	Channel       string    `json:"channel"`
@@ -37,14 +32,12 @@ type Message struct {
 	Photos        []string  `json:"photos,omitempty"`
 }
 
-// Client fetches and parses channel pages.
 type Client struct {
 	BaseURL    string
 	UserAgent  string
 	HTTPClient *http.Client
 }
 
-// New returns a Client with sensible defaults.
 func New() *Client {
 	return &Client{
 		BaseURL:   defaultBaseURL,
@@ -55,9 +48,15 @@ func New() *Client {
 	}
 }
 
-// FetchRaw downloads the HTML for the channel page and returns it as a string.
 func (c *Client) FetchRaw(ctx context.Context, channel string) (string, error) {
-	url := fmt.Sprintf("%s/%s", c.BaseURL, channel)
+	return c.fetchRaw(ctx, fmt.Sprintf("%s/%s", c.BaseURL, channel))
+}
+
+func (c *Client) FetchRawBefore(ctx context.Context, channel string, beforeID int) (string, error) {
+	return c.fetchRaw(ctx, fmt.Sprintf("%s/%s?before=%d", c.BaseURL, channel, beforeID))
+}
+
+func (c *Client) fetchRaw(ctx context.Context, url string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
@@ -83,8 +82,7 @@ func (c *Client) FetchRaw(ctx context.Context, channel string) (string, error) {
 	return string(body), nil
 }
 
-// Fetch downloads the channel page and parses messages from it.
-// Messages are returned in ascending order by ID (oldest first).
+// Fetch returns messages sorted ascending by ID.
 func (c *Client) Fetch(ctx context.Context, channel string) ([]Message, error) {
 	raw, err := c.FetchRaw(ctx, channel)
 	if err != nil {
@@ -93,7 +91,14 @@ func (c *Client) Fetch(ctx context.Context, channel string) ([]Message, error) {
 	return Parse(channel, raw)
 }
 
-// Parse extracts messages from a raw channel page HTML string.
+func (c *Client) FetchBefore(ctx context.Context, channel string, beforeID int) ([]Message, error) {
+	raw, err := c.FetchRawBefore(ctx, channel, beforeID)
+	if err != nil {
+		return nil, err
+	}
+	return Parse(channel, raw)
+}
+
 func Parse(channel, htmlSrc string) ([]Message, error) {
 	doc, err := html.Parse(strings.NewReader(htmlSrc))
 	if err != nil {
@@ -108,18 +113,13 @@ func Parse(channel, htmlSrc string) ([]Message, error) {
 		if !hasClass(n, "etme_widget_message") || hasClass(n, "etme_widget_message_wrap") {
 			return
 		}
-		// Only the inner message div carries data-post; this filters out
-		// nested helper divs that share the etme_widget_message prefix.
 		post := attr(n, "data-post")
 		if post == "" {
 			return
 		}
-		msg := parseMessage(channel, n, post)
-		msgs = append(msgs, msg)
+		msgs = append(msgs, parseMessage(channel, n, post))
 	})
 
-	// Sort ascending by ID — eitaa.com tends to render oldest first but
-	// we sort defensively in case pagination edges change.
 	sortByID(msgs)
 	return msgs, nil
 }
@@ -158,12 +158,8 @@ func parseMessage(channel string, root *html.Node, dataPost string) Message {
 					msg.Date = t
 				}
 			}
-		case n.Data == "a" && hasClass(n, "etme_widget_message_photo_wrap"):
-			if u := extractBackgroundURL(attr(n, "style")); u != "" {
-				msg.Photos = append(msg.Photos, absURL(u))
-			}
-		case n.Data == "div" && hasClass(n, "etme_widget_message_photo"):
-			// Standalone single-photo messages put the URL on this div.
+		case n.Data == "a" && hasClass(n, "etme_widget_message_photo_wrap"),
+			n.Data == "div" && hasClass(n, "etme_widget_message_photo"):
 			if u := extractBackgroundURL(attr(n, "style")); u != "" {
 				msg.Photos = append(msg.Photos, absURL(u))
 			}
@@ -172,8 +168,6 @@ func parseMessage(channel string, root *html.Node, dataPost string) Message {
 
 	return msg
 }
-
-// --- helpers ---
 
 func walk(n *html.Node, fn func(*html.Node)) {
 	fn(n)
@@ -251,8 +245,8 @@ func absURL(u string) string {
 
 var nonDigit = regexp.MustCompile(`[^0-9]`)
 
-// parseViews accepts either the raw data-count attribute or the visible text
-// (which may be "۱.۲هزار" etc). We trust data-count if it is a clean integer.
+// parseViews prefers data-count (a clean integer); the visible text can be
+// localised like "۱.۲هزار" and the digit-only fallback loses the scale.
 func parseViews(dataCount, fallback string) (int, error) {
 	if dataCount != "" {
 		if v, err := strconv.Atoi(strings.TrimSpace(dataCount)); err == nil {
