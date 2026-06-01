@@ -33,7 +33,7 @@ func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	pub, err := publisher.New(cfg.Target)
+	pub, err := publisher.New(cfg.Target, log)
 	if err != nil {
 		return nil, err
 	}

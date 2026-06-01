@@ -4,8 +4,10 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -20,21 +22,30 @@ var htmlAssets embed.FS
 
 // HTML generates a static site under OutputDir.
 //
-// On first Publish (or open) the embedded index.html, style.css, and app.js
-// are copied into OutputDir. Every Publish then updates posts.json, which
-// the static page reads to render the list. The site is fully usable by
-// pointing any static file server at OutputDir.
+// On the first run the embedded index.html, style.css, and app.js are
+// extracted into OutputDir. They are NOT overwritten on subsequent
+// runs, so any local edits to the look-and-feel are preserved.
+// To force a refresh (e.g. after upgrading the bridge), delete the
+// output directory.
+//
+// Every Publish updates posts.json, which the static page reads to
+// render the list. The site is fully usable by pointing any static
+// file server at OutputDir.
 type HTML struct {
 	cfg config.HTMLTarget
+	log *slog.Logger
 
 	mu    sync.Mutex
 	posts map[int]router.Routed
 }
 
 // NewHTML returns an HTML publisher. The output directory and the
-// embedded static assets are created on the first Publish.
-func NewHTML(cfg config.HTMLTarget) (*HTML, error) {
-	p := &HTML{cfg: cfg, posts: map[int]router.Routed{}}
+// embedded static assets are created on the first call.
+func NewHTML(cfg config.HTMLTarget, log *slog.Logger) (*HTML, error) {
+	if log == nil {
+		log = slog.Default()
+	}
+	p := &HTML{cfg: cfg, log: log, posts: map[int]router.Routed{}}
 	if err := p.ensureAssets(); err != nil {
 		return nil, err
 	}
@@ -58,6 +69,8 @@ func (p *HTML) Publish(_ context.Context, msg router.Routed) error {
 // Close implements Publisher.
 func (p *HTML) Close() error { return nil }
 
+// ensureAssets copies the embedded site template into OutputDir.
+// Existing files are left alone so user edits survive restarts.
 func (p *HTML) ensureAssets() error {
 	if err := os.MkdirAll(p.cfg.OutputDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", p.cfg.OutputDir, err)
@@ -69,14 +82,23 @@ func (p *HTML) ensureAssets() error {
 		if d.IsDir() {
 			return nil
 		}
-		// Strip the "htmlsite/" prefix so files land at the root of OutputDir.
 		rel := path[len("htmlsite/"):]
 		dst := filepath.Join(p.cfg.OutputDir, rel)
+		if _, err := os.Stat(dst); err == nil {
+			p.log.Debug("html asset already present, leaving in place", "path", dst)
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("stat %s: %w", dst, err)
+		}
 		data, err := htmlAssets.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("read embedded %s: %w", path, err)
 		}
-		return os.WriteFile(dst, data, 0o644)
+		if err := os.WriteFile(dst, data, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", dst, err)
+		}
+		p.log.Info("html asset written", "path", dst)
+		return nil
 	})
 }
 
@@ -85,14 +107,17 @@ func (p *HTML) ensureAssets() error {
 func (p *HTML) loadExisting() error {
 	b, err := os.ReadFile(p.postsPath())
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("read existing posts.json: %w", err)
 	}
 	var payload sitePayload
 	if err := json.Unmarshal(b, &payload); err != nil {
-		// A corrupt file should not crash the publisher — start clean.
+		// Don't crash on a corrupt file — but make it loud so an
+		// operator sees their archive is being abandoned.
+		p.log.Warn("existing posts.json is unreadable, starting empty",
+			"path", p.postsPath(), "err", err)
 		return nil
 	}
 	for _, r := range payload.Posts {

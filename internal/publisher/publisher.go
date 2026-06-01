@@ -9,6 +9,7 @@ package publisher
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/config"
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/router"
@@ -25,15 +26,20 @@ type Publisher interface {
 	Close() error
 }
 
-// New builds the Publisher described by cfg.
-func New(cfg config.Target) (Publisher, error) {
+// New builds the Publisher described by cfg. The logger is used by
+// publishers that need to surface non-fatal warnings (asset extraction,
+// stub notices, corrupt state files, etc.).
+func New(cfg config.Target, log *slog.Logger) (Publisher, error) {
+	if log == nil {
+		log = slog.Default()
+	}
 	switch cfg.Type {
 	case config.TargetFile:
 		return NewFile(cfg.File.Path)
 	case config.TargetHTML:
-		return NewHTML(cfg.HTML)
+		return NewHTML(cfg.HTML, log)
 	case config.TargetWordPress:
-		return NewWordPress(cfg.WordPress), nil
+		return NewWordPress(cfg.WordPress, log), nil
 	default:
 		return nil, fmt.Errorf("unknown target type %q", cfg.Type)
 	}
