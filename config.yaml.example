@@ -6,16 +6,49 @@ source:
   channel: Merajyan           # channel username, without the @
   poll_interval: 10s          # how often to check (e.g. 10s, 5m, 1h)
 
+# ── publishing: which posts to publish, by hashtag ──────────────────
+# include_hashtags is an allow-list. A post is published only if it
+# carries at least one of these hashtags. Leave empty to publish
+# everything that is not explicitly skipped.
+# skip_hashtags is a deny-list and always wins.
+# Both lists accept entries with or without a leading "#".
+publishing:
+  include_hashtags:
+    - گزارش_تصویری
+    - اطلاعیه
+    - مناسبت
+    - کمک_مالی
+    - خبر
+    - معرفی
+    - پاسخ
+  skip_hashtags:
+    - خصوصی
+    - نمایش_نده
+
 # ── target: where to publish each new message ───────────────────────
-# Today only the `file` target is implemented. It writes one JSON line
-# per published message to the file below. When the destination site
-# is decided (e.g. WordPress), a new target type will be added here.
+# Supported types:
+#   file       — append routed messages as JSONL to file.path
+#   html       — generate a static site under html.output_dir
+#   wordpress  — post to a WordPress REST API (NOT YET IMPLEMENTED)
 target:
-  type: file
-  file:
-    path: data/published.jsonl
+  type: html
+  html:
+    output_dir: site
+    site_title: "کانال موسسه معراج"
+
+  # type: file
+  # file:
+  #   path: data/published.jsonl
+
+  # type: wordpress
+  # wordpress:
+  #   url: https://example.com
+  #   username: admin
+  #   app_password: ""
+  #   post_type: post
+  #   status: draft
 
 # ── storage: local bookkeeping ──────────────────────────────────────
 storage:
-  seen_file: data/seen.json          # IDs of messages already published
+  seen_file: data/seen.json          # IDs of messages already processed
   archive_file: data/messages.jsonl  # raw archive of every message seen

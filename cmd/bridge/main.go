@@ -1,16 +1,16 @@
-// Command bridge reads messages from an Eitaa channel and republishes
-// them to a configured target.
+// Command bridge reads messages from an Eitaa channel, classifies them
+// according to the posting guide, filters them by the configured
+// publishing rules, and delivers the rest to the configured target.
 //
 // Subcommands:
 //
-//	bridge dump   — fetch the channel once, write raw HTML and parsed
-//	                JSON to the storage directory. Useful for inspecting
-//	                message structure without publishing.
-//	bridge run    — poll the channel on the configured interval and
-//	                publish each new message via the configured target.
+//	bridge dump   — fetch the channel once, parse + route every message
+//	                and write JSON to data/. No publishing.
+//	bridge run    — poll the channel on source.poll_interval and publish
+//	                each new message that matches the publishing rules.
 //
-// Both commands read config.yaml (override with --config) for the
-// source channel and target site.
+// Both commands read config.yaml (override with --config) for source
+// channel, publishing rules, and target.
 package main
 
 import (
@@ -27,6 +27,7 @@ import (
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/config"
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/eitaa"
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/publisher"
+	"github.com/mohsenm4/eitaa-channel-bridge/internal/router"
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/state"
 )
 
@@ -58,10 +59,12 @@ usage:
   bridge dump  [--config PATH]
   bridge run   [--config PATH]
 
-dump   fetches the channel once and writes raw HTML + parsed JSON
-       under data/. No publishing.
-run    polls the channel on source.poll_interval and publishes each
-       new message via the configured target.
+dump   fetches the channel once and writes raw HTML + routed JSON
+       under data/. Shows which posts WOULD be published. No side effects
+       on the target.
+run    polls the channel on source.poll_interval. For each new message,
+       it classifies, filters by publishing.include_hashtags /
+       skip_hashtags, and publishes via the configured target.
 
 flags:
   --config  path to config file (default: config.yaml)
@@ -99,8 +102,10 @@ func runDump(args []string) {
 	if err != nil {
 		fatal("parse: %v", err)
 	}
+	routed := router.RouteAll(msgs)
+
 	prettyPath := filepath.Join(dataDir, "last_dump.json")
-	if err := writeJSONIndented(prettyPath, msgs); err != nil {
+	if err := writeJSONIndented(prettyPath, routed); err != nil {
 		fatal("write pretty: %v", err)
 	}
 	if err := writeJSONL(cfg.Storage.ArchiveFile, msgs); err != nil {
@@ -108,14 +113,36 @@ func runDump(args []string) {
 	}
 
 	fmt.Printf("channel:  @%s\n", cfg.Source.Channel)
-	fmt.Printf("messages: %d\n", len(msgs))
+	fmt.Printf("messages: %d\n", len(routed))
 	fmt.Printf("raw html: %s\n", rawPath)
 	fmt.Printf("pretty:   %s\n", prettyPath)
 	fmt.Printf("archive:  %s\n\n", cfg.Storage.ArchiveFile)
-	for _, m := range msgs {
-		preview := truncate(sanitize(m.Text), 80)
-		fmt.Printf("  #%d  %s  views=%d  photos=%d  | %s\n",
-			m.ID, m.Date.Format("2006-01-02 15:04"), m.Views, len(m.Photos), preview)
+
+	published, skipped := 0, 0
+	for _, r := range routed {
+		ok, _ := publisher.ShouldPublish(cfg.Publishing, r)
+		if ok {
+			published++
+		} else {
+			skipped++
+		}
+	}
+	fmt.Printf("would publish: %d\n", published)
+	fmt.Printf("would skip:    %d\n\n", skipped)
+
+	for _, r := range routed {
+		ok, reason := publisher.ShouldPublish(cfg.Publishing, r)
+		marker := "✓"
+		if !ok {
+			marker = "·"
+		}
+		title := r.Title
+		if title == "" {
+			title = "(no title)"
+		}
+		title = truncate(sanitize(title), 56)
+		fmt.Printf(" %s #%d  [%-12s] %-26s | %s\n",
+			marker, r.ID, r.CategoryFa, "("+reason+")", title)
 	}
 }
 
@@ -143,6 +170,14 @@ func runRun(args []string) {
 	fmt.Printf("source:   @%s\n", cfg.Source.Channel)
 	fmt.Printf("target:   %s\n", pub.Name())
 	fmt.Printf("interval: %s\n", cfg.Source.PollInterval)
+	if len(cfg.Publishing.IncludeHashtags) > 0 {
+		fmt.Printf("publish:  #%s\n", join(cfg.Publishing.IncludeHashtags, " #"))
+	} else {
+		fmt.Printf("publish:  ALL (no include filter)\n")
+	}
+	if len(cfg.Publishing.SkipHashtags) > 0 {
+		fmt.Printf("skip:     #%s\n", join(cfg.Publishing.SkipHashtags, " #"))
+	}
 	fmt.Println("press Ctrl+C to stop")
 
 	tick := func() {
@@ -158,8 +193,18 @@ func runRun(args []string) {
 			if store.Seen(cfg.Source.Channel, m.ID) {
 				continue
 			}
-			if err := pub.Publish(ctx, m); err != nil {
-				fmt.Fprintf(os.Stderr, "[%s] publish #%d: %v\n", time.Now().Format(time.RFC3339), m.ID, err)
+			r := router.Route(m)
+			ok, reason := publisher.ShouldPublish(cfg.Publishing, r)
+			if !ok {
+				fmt.Printf("[%s] skipped #%d (%s)\n",
+					time.Now().Format("15:04:05"), m.ID, reason)
+				store.Mark(cfg.Source.Channel, m.ID)
+				newCount++
+				continue
+			}
+			if err := pub.Publish(ctx, r); err != nil {
+				fmt.Fprintf(os.Stderr, "[%s] publish #%d: %v\n",
+					time.Now().Format(time.RFC3339), m.ID, err)
 				continue
 			}
 			if err := appendJSONL(cfg.Storage.ArchiveFile, m); err != nil {
@@ -167,7 +212,8 @@ func runRun(args []string) {
 			}
 			store.Mark(cfg.Source.Channel, m.ID)
 			newCount++
-			fmt.Printf("[%s] published #%d (%s)\n", time.Now().Format("15:04:05"), m.ID, truncate(sanitize(m.Text), 60))
+			fmt.Printf("[%s] published #%d [%s] %s\n",
+				time.Now().Format("15:04:05"), m.ID, r.CategoryFa, truncate(sanitize(r.Title), 50))
 		}
 		if newCount > 0 {
 			if err := store.Save(); err != nil {
@@ -264,6 +310,17 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return string(rs[:max]) + "…"
+}
+
+func join(items []string, sep string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	out := items[0]
+	for _, s := range items[1:] {
+		out += sep + s
+	}
+	return out
 }
 
 func fatal(format string, a ...any) {

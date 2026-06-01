@@ -19,6 +19,9 @@ data/raw.html
 data/*.log
 data/media/
 
+# Generated static site (HTML publisher output)
+site/
+
 # IDE
 .vscode/
 .idea/

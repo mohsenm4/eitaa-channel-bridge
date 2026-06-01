@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/mohsenm4/eitaa-channel-bridge/internal/eitaa"
+	"github.com/mohsenm4/eitaa-channel-bridge/internal/router"
 )
 
 // File appends each published message to a JSON Lines file.
@@ -36,7 +36,7 @@ func NewFile(path string) (*File, error) {
 func (p *File) Name() string { return "file:" + p.path }
 
 // Publish implements Publisher.
-func (p *File) Publish(_ context.Context, msg eitaa.Message) error {
+func (p *File) Publish(_ context.Context, msg router.Routed) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.enc.Encode(msg)
