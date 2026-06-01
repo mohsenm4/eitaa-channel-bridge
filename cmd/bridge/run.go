@@ -167,10 +167,10 @@ func (r *runner) Run(ctx context.Context) {
 
 func runRun(log *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	cfgPath := fs.String("config", defaultConfigPath, "path to config file")
+	envPath := fs.String("env", defaultEnvPath, "path to .env file (optional)")
 	_ = fs.Parse(args)
 
-	cfg := config.MustLoad(*cfgPath)
+	cfg := config.MustLoad(*envPath)
 	r, err := newRunner(cfg, log)
 	if err != nil {
 		utils.Fatal("init: %v", err)

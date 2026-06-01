@@ -1,3 +1,17 @@
+// Command bridge reads messages from an Eitaa channel, classifies them
+// according to the posting guide, filters them by the configured
+// publishing rules, and delivers the rest to the configured target.
+//
+// Subcommands:
+//
+//	bridge dump   — fetch the channel once, parse + route every message
+//	                and write JSON to data/. No publishing.
+//	bridge run    — poll the channel on source.poll_interval and publish
+//	                each new message that matches the publishing rules.
+//
+// Configuration is read entirely from environment variables, with a
+// .env file in the working directory as a convenience for local
+// development. See .env.example for the full schema.
 package main
 
 import (
@@ -8,7 +22,7 @@ import (
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/utils"
 )
 
-const defaultConfigPath = config.DefaultPath
+const defaultEnvPath = config.DefaultEnvPath
 
 func main() {
 	if len(os.Args) < 2 {
@@ -34,27 +48,26 @@ func usage() {
 	fmt.Fprint(os.Stderr, `bridge — read an Eitaa channel and republish it
 
 usage:
-  bridge dump  [--config PATH]
-  bridge run   [--config PATH]
+  bridge dump  [--env PATH]
+  bridge run   [--env PATH]
 
 dump   fetches the channel once and writes raw HTML + routed JSON
        under the storage directory. Shows which posts WOULD be
        published. No side effects on the target.
-run    polls the channel on source.poll_interval. For each new
-       message, it classifies, filters by publishing rules, and
-       publishes via the configured target. On the first run (empty
-       seen-set) it walks Eitaa's ?before= pagination up to
-       source.backfill_max older messages.
+run    polls the channel on EITAA_BRIDGE_SOURCE_POLL_INTERVAL.
+       For each new message, it classifies, filters by publishing
+       rules, and publishes via the configured target. On the first
+       run (empty seen-set) it walks Eitaa's ?before= pagination up to
+       EITAA_BRIDGE_SOURCE_BACKFILL_MAX older messages.
 
 flags:
-  --config  path to config file (default: config.yaml)
+  --env  path to .env file (default: .env, optional — missing is OK)
 
 env:
-  EITAA_BRIDGE_<NESTED_KEY>     override config values, e.g.
-                                EITAA_BRIDGE_SOURCE_CHANNEL=othername
-  EITAA_BRIDGE_LOG_LEVEL        debug|info|warn|error (default: info)
+  Every config value is an EITAA_BRIDGE_* environment variable. Real
+  env vars always override the .env file. See .env.example for the
+  full schema.
 
-config:
-  See config.yaml.example for the schema.
+  EITAA_BRIDGE_LOG_LEVEL   debug|info|warn|error (default: info)
 `)
 }

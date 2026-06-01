@@ -6,10 +6,10 @@ dist/
 *.out
 coverage.out
 
-# Config with secrets
-config.yaml
-config.yml
+# Configuration with secrets
 .env
+.env.local
+.env.*.local
 
 # Runtime state and archives
 data/seen.json

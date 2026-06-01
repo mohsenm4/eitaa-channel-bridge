@@ -1,13 +1,3 @@
-// Package config loads the bridge's YAML configuration.
-//
-// The config has four top-level sections:
-//
-//	source      — which Eitaa channel to read and how often
-//	publishing  — which categories of post to publish, by hashtag
-//	target      — where to publish them
-//	storage     — paths for the seen-set and the raw message archive
-//
-// A complete annotated example lives in config.yaml.example.
 package config
 
 import (
@@ -16,113 +6,82 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/go-viper/mapstructure/v2"
-	"github.com/spf13/viper"
+	"github.com/joho/godotenv"
 )
 
-// DefaultPath is the path Load looks at when called without an argument.
-const DefaultPath = "config.yaml"
-
-// EnvPrefix is the prefix for every environment-variable override.
-// Example: EITAA_BRIDGE_SOURCE_CHANNEL overrides source.channel.
+// EnvPrefix is the prefix shared by every configuration variable.
 const EnvPrefix = "EITAA_BRIDGE"
 
-// envBindings lists every config key that may be overridden by env.
-// Nested keys use "." here and "_" in the env var name.
-var envBindings = []string{
-	"source.channel",
-	"source.poll_interval",
-	"source.backfill_max",
-	"target.type",
-	"target.html.output_dir",
-	"target.html.site_title",
-	"target.file.path",
-	"target.wordpress.url",
-	"target.wordpress.username",
-	"target.wordpress.app_password",
-	"target.wordpress.post_type",
-	"target.wordpress.status",
-	"storage.seen_file",
-	"storage.archive_file",
-}
+// DefaultEnvPath is the .env file Load() consults when no path is given.
+const DefaultEnvPath = ".env"
 
-// Config is the parsed configuration with defaults applied.
+// Config is the fully resolved configuration.
 type Config struct {
-	Source     Source     `yaml:"source"`
-	Publishing Publishing `yaml:"publishing"`
-	Target     Target     `yaml:"target"`
-	Storage    Storage    `yaml:"storage"`
+	Source     Source
+	Publishing Publishing
+	Target     Target
+	Storage    Storage
 }
 
 // Source describes the channel to read from.
-//
-// BackfillMax controls how many historical messages to walk back through
-// on the FIRST run (when the seen-set for this channel is empty). Eitaa's
-// public page only shows the latest ~5–15 posts; setting BackfillMax > 0
-// makes the bridge follow the `?before=` pagination on startup until
-// BackfillMax messages have been collected or the channel runs out.
-// 0 disables backfill.
 type Source struct {
-	Channel      string        `yaml:"channel"`
-	PollInterval time.Duration `yaml:"poll_interval"`
-	BackfillMax  int           `yaml:"backfill_max"`
+	Channel      string
+	PollInterval time.Duration
+	BackfillMax  int
 }
 
-// Publishing describes how the bridge classifies and filters posts.
-//
-// Categories drives both classification (which slug/label a post gets)
-// and filtering (a post is only published if it matches at least one
-// category — unless Default is set, in which case unmatched posts land
-// there). SkipHashtags always wins.
+// Publishing controls which messages get forwarded and how they are
+// classified for the target.
 type Publishing struct {
-	Categories   []Category `yaml:"categories"`
-	Default      *Category  `yaml:"default_category,omitempty"`
-	SkipHashtags []string   `yaml:"skip_hashtags"`
+	Categories   []Category
+	Default      *Category
+	SkipHashtags []string
 }
 
 // Category maps a hashtag to a site category.
 type Category struct {
-	Hashtag string `yaml:"hashtag"`
-	Slug    string `yaml:"slug"`
-	Label   string `yaml:"label"`
+	Hashtag string
+	Slug    string
+	Label   string
 }
 
-// Target describes where parsed messages should be published.
-// Only the block matching Type is read.
+// Target describes where messages should be published. Only the
+// block matching Type is read.
 type Target struct {
-	Type      string          `yaml:"type"`
-	File      FileTarget      `yaml:"file,omitempty"`
-	HTML      HTMLTarget      `yaml:"html,omitempty"`
-	WordPress WordPressTarget `yaml:"wordpress,omitempty"`
+	Type      string
+	File      FileTarget
+	HTML      HTMLTarget
+	WordPress WordPressTarget
 }
 
-// FileTarget appends each published message to a JSON Lines file.
+// FileTarget appends each message as a JSON line to Path.
 type FileTarget struct {
-	Path string `yaml:"path"`
+	Path string
 }
 
-// HTMLTarget generates a static HTML site under OutputDir.
+// HTMLTarget generates a static site under OutputDir.
 type HTMLTarget struct {
-	OutputDir string `yaml:"output_dir"`
-	SiteTitle string `yaml:"site_title,omitempty"`
+	OutputDir string
+	SiteTitle string
 }
 
-// WordPressTarget posts each message to a WordPress site (not yet implemented).
+// WordPressTarget posts to a WordPress site (not yet implemented).
 type WordPressTarget struct {
-	URL         string `yaml:"url"`
-	Username    string `yaml:"username"`
-	AppPassword string `yaml:"app_password"`
-	PostType    string `yaml:"post_type,omitempty"`
-	Status      string `yaml:"status,omitempty"`
+	URL         string
+	Username    string
+	AppPassword string
+	PostType    string
+	Status      string
 }
 
-// Storage holds the on-disk state for the bridge.
+// Storage holds on-disk paths for runtime state.
 type Storage struct {
-	SeenFile    string `yaml:"seen_file"`
-	ArchiveFile string `yaml:"archive_file"`
+	SeenFile    string
+	ArchiveFile string
 }
 
 // Known target types.
@@ -132,35 +91,56 @@ const (
 	TargetWordPress = "wordpress"
 )
 
-// Load reads YAML from path, applies environment overrides, and returns
-// a validated config.
-//
-// Env vars under EITAA_BRIDGE_ override file values, with "_" between
-// nested keys — e.g. EITAA_BRIDGE_SOURCE_CHANNEL=othername replaces
-// source.channel, EITAA_BRIDGE_TARGET_WORDPRESS_APP_PASSWORD overrides
-// the WordPress credential.
-//
-// A missing file is reported with os.ErrNotExist via the wrapped error,
-// so callers can distinguish it.
-func Load(path string) (*Config, error) {
-	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("read config %s: %w", path, err)
+// Load reads environment variables, optionally seeded by a .env file.
+// Pass "" to skip the .env file. A missing .env file is not an error;
+// any other read error is reported. Real environment variables always
+// take precedence over .env values.
+func Load(envPath string) (*Config, error) {
+	if envPath != "" {
+		if err := godotenv.Load(envPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("read %s: %w", envPath, err)
+		}
 	}
-	v := viper.New()
-	v.SetConfigFile(path)
-	if err := v.ReadInConfig(); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", path, err)
-	}
-	v.SetEnvPrefix(EnvPrefix)
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	v.AutomaticEnv()
-	for _, key := range envBindings {
-		_ = v.BindEnv(key)
-	}
+
 	var cfg Config
-	if err := v.Unmarshal(&cfg, useYAMLTags); err != nil {
-		return nil, fmt.Errorf("decode config %s: %w", path, err)
+
+	cfg.Source.Channel = strings.TrimPrefix(envStr("SOURCE_CHANNEL"), "@")
+	pi, err := envDuration("SOURCE_POLL_INTERVAL")
+	if err != nil {
+		return nil, err
 	}
+	cfg.Source.PollInterval = pi
+	bm, err := envInt("SOURCE_BACKFILL_MAX")
+	if err != nil {
+		return nil, err
+	}
+	cfg.Source.BackfillMax = bm
+
+	cats, err := parseCategories(envStr("PUBLISHING_CATEGORIES"))
+	if err != nil {
+		return nil, err
+	}
+	cfg.Publishing.Categories = cats
+	def, err := parseDefaultCategory(envStr("PUBLISHING_DEFAULT_CATEGORY"))
+	if err != nil {
+		return nil, err
+	}
+	cfg.Publishing.Default = def
+	cfg.Publishing.SkipHashtags = parseCommaList(envStr("PUBLISHING_SKIP_HASHTAGS"))
+
+	cfg.Target.Type = envStr("TARGET_TYPE")
+	cfg.Target.File.Path = envStr("TARGET_FILE_PATH")
+	cfg.Target.HTML.OutputDir = envStr("TARGET_HTML_OUTPUT_DIR")
+	cfg.Target.HTML.SiteTitle = envStr("TARGET_HTML_SITE_TITLE")
+	cfg.Target.WordPress.URL = envStr("TARGET_WORDPRESS_URL")
+	cfg.Target.WordPress.Username = envStr("TARGET_WORDPRESS_USERNAME")
+	cfg.Target.WordPress.AppPassword = envStr("TARGET_WORDPRESS_APP_PASSWORD")
+	cfg.Target.WordPress.PostType = envStr("TARGET_WORDPRESS_POST_TYPE")
+	cfg.Target.WordPress.Status = envStr("TARGET_WORDPRESS_STATUS")
+
+	cfg.Storage.SeenFile = envStr("STORAGE_SEEN_FILE")
+	cfg.Storage.ArchiveFile = envStr("STORAGE_ARCHIVE_FILE")
+
 	cfg.applyDefaults()
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -168,35 +148,110 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// MustLoad is Load with the CLI-style "exit on error" behaviour: a
-// missing config file prints a hint about config.yaml.example and
-// any other error is printed verbatim. Intended for short-lived
-// commands; library callers should use Load and handle the error.
-func MustLoad(path string) *Config {
-	cfg, err := Load(path)
+// MustLoad is Load with CLI-style exit on error. If the env file path
+// is empty it tries DefaultEnvPath (".env" in the current directory)
+// silently — a missing .env is fine, missing required values are not.
+func MustLoad(envPath string) *Config {
+	if envPath == "" {
+		envPath = DefaultEnvPath
+	}
+	cfg, err := Load(envPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(os.Stderr,
-				"error: config file %s not found — copy config.yaml.example to config.yaml and fill it in\n",
-				path)
-			os.Exit(1)
-		}
 		fmt.Fprintf(os.Stderr, "error: config: %v\n", err)
+		fmt.Fprintln(os.Stderr, "hint: copy .env.example to .env, or set EITAA_BRIDGE_* variables directly.")
 		os.Exit(1)
 	}
 	return cfg
 }
 
-// useYAMLTags tells mapstructure to read the same struct tags that
-// describe the YAML file, so we avoid duplicating each tag.
-// It also enables the standard hooks for time.Duration and string slices.
-func useYAMLTags(dc *mapstructure.DecoderConfig) {
-	dc.TagName = "yaml"
-	dc.DecodeHook = mapstructure.ComposeDecodeHookFunc(
-		mapstructure.StringToTimeDurationHookFunc(),
-		mapstructure.StringToSliceHookFunc(","),
-	)
+// --- env-var lookup helpers ---
+
+func envStr(key string) string {
+	return strings.TrimSpace(os.Getenv(EnvPrefix + "_" + key))
 }
+
+func envInt(key string) (int, error) {
+	s := envStr(key)
+	if s == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("%s_%s: %w", EnvPrefix, key, err)
+	}
+	return n, nil
+}
+
+func envDuration(key string) (time.Duration, error) {
+	s := envStr(key)
+	if s == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("%s_%s: %w", EnvPrefix, key, err)
+	}
+	return d, nil
+}
+
+// --- list / nested-value parsers ---
+
+func parseCommaList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimPrefix(strings.TrimSpace(p), "#")
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func parseCategories(s string) ([]Category, error) {
+	if s == "" {
+		return nil, nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]Category, 0, len(parts))
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		fields := strings.Split(p, "|")
+		if len(fields) != 3 {
+			return nil, fmt.Errorf(
+				"EITAA_BRIDGE_PUBLISHING_CATEGORIES entry %d (%q): expected \"hashtag|slug|label\"", i, p)
+		}
+		out = append(out, Category{
+			Hashtag: strings.TrimPrefix(strings.TrimSpace(fields[0]), "#"),
+			Slug:    strings.TrimSpace(fields[1]),
+			Label:   strings.TrimSpace(fields[2]),
+		})
+	}
+	return out, nil
+}
+
+func parseDefaultCategory(s string) (*Category, error) {
+	if s == "" {
+		return nil, nil
+	}
+	fields := strings.Split(s, "|")
+	if len(fields) != 2 {
+		return nil, fmt.Errorf(
+			"EITAA_BRIDGE_PUBLISHING_DEFAULT_CATEGORY (%q): expected \"slug|label\"", s)
+	}
+	return &Category{
+		Slug:  strings.TrimSpace(fields[0]),
+		Label: strings.TrimSpace(fields[1]),
+	}, nil
+}
+
+// --- defaults and validation ---
 
 func (c *Config) applyDefaults() {
 	if c.Source.PollInterval == 0 {
@@ -228,69 +283,49 @@ func (c *Config) applyDefaults() {
 			c.Target.WordPress.Status = "draft"
 		}
 	}
-	// Strip leading # from hashtag entries so users can write either form.
-	c.Publishing.SkipHashtags = stripHashes(c.Publishing.SkipHashtags)
-	for i := range c.Publishing.Categories {
-		c.Publishing.Categories[i].Hashtag = stripHash(c.Publishing.Categories[i].Hashtag)
-	}
-}
-
-func stripHashes(in []string) []string {
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		out = append(out, stripHash(s))
-	}
-	return out
-}
-
-func stripHash(s string) string {
-	return strings.TrimPrefix(strings.TrimSpace(s), "#")
 }
 
 func (c *Config) validate() error {
 	if c.Source.Channel == "" {
-		return errors.New("source.channel is required")
-	}
-	if strings.HasPrefix(c.Source.Channel, "@") {
-		return errors.New("source.channel must not include the leading @")
+		return errors.New("EITAA_BRIDGE_SOURCE_CHANNEL is required")
 	}
 	if c.Source.PollInterval < 5*time.Second {
-		return fmt.Errorf("source.poll_interval too small (%s): use at least 5s", c.Source.PollInterval)
+		return fmt.Errorf("EITAA_BRIDGE_SOURCE_POLL_INTERVAL too small (%s): use at least 5s", c.Source.PollInterval)
 	}
 	for i, cat := range c.Publishing.Categories {
 		if cat.Hashtag == "" || cat.Slug == "" || cat.Label == "" {
-			return fmt.Errorf("publishing.categories[%d]: hashtag, slug and label are all required", i)
+			return fmt.Errorf("EITAA_BRIDGE_PUBLISHING_CATEGORIES[%d]: each entry needs hashtag|slug|label", i)
 		}
 	}
 	if c.Publishing.Default != nil {
 		d := c.Publishing.Default
 		if d.Slug == "" || d.Label == "" {
-			return errors.New("publishing.default_category: slug and label are required")
+			return errors.New("EITAA_BRIDGE_PUBLISHING_DEFAULT_CATEGORY: slug|label both required")
 		}
 	}
 	switch c.Target.Type {
 	case TargetFile:
 		if c.Target.File.Path == "" {
-			return errors.New("target.file.path is required when target.type is file")
+			return errors.New("EITAA_BRIDGE_TARGET_FILE_PATH is required for target type 'file'")
 		}
 	case TargetHTML:
 		if c.Target.HTML.OutputDir == "" {
-			return errors.New("target.html.output_dir is required when target.type is html")
+			return errors.New("EITAA_BRIDGE_TARGET_HTML_OUTPUT_DIR is required for target type 'html'")
 		}
 	case TargetWordPress:
 		if c.Target.WordPress.URL == "" {
-			return errors.New("target.wordpress.url is required when target.type is wordpress")
+			return errors.New("EITAA_BRIDGE_TARGET_WORDPRESS_URL is required for target type 'wordpress'")
 		}
 		if _, err := url.Parse(c.Target.WordPress.URL); err != nil {
-			return fmt.Errorf("target.wordpress.url invalid: %w", err)
+			return fmt.Errorf("EITAA_BRIDGE_TARGET_WORDPRESS_URL invalid: %w", err)
 		}
 		if c.Target.WordPress.Username == "" || c.Target.WordPress.AppPassword == "" {
-			return errors.New("target.wordpress.username and target.wordpress.app_password are required")
+			return errors.New("EITAA_BRIDGE_TARGET_WORDPRESS_USERNAME and _APP_PASSWORD are required")
 		}
 	case "":
-		return errors.New("target.type is required (one of: file, html, wordpress)")
+		return errors.New("EITAA_BRIDGE_TARGET_TYPE is required (one of: file, html, wordpress)")
 	default:
-		return fmt.Errorf("target.type %q is not supported (use: file, html, wordpress)", c.Target.Type)
+		return fmt.Errorf("EITAA_BRIDGE_TARGET_TYPE %q is not supported (use: file, html, wordpress)", c.Target.Type)
 	}
 	return nil
 }

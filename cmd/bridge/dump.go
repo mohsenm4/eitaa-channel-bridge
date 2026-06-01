@@ -20,10 +20,10 @@ import (
 // to the storage directory. It does not publish or mutate the seen-set.
 func runDump(log *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("dump", flag.ExitOnError)
-	cfgPath := fs.String("config", defaultConfigPath, "path to config file")
+	envPath := fs.String("env", defaultEnvPath, "path to .env file (optional)")
 	_ = fs.Parse(args)
 
-	cfg := config.MustLoad(*cfgPath)
+	cfg := config.MustLoad(*envPath)
 	dataDir := filepath.Dir(cfg.Storage.ArchiveFile)
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		utils.Fatal("mkdir %s: %v", dataDir, err)
