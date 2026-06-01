@@ -187,15 +187,7 @@ func runRun(args []string) {
 	}
 	fmt.Println("press Ctrl+C to stop")
 
-	tick := func() {
-		fetchCtx, fcancel := context.WithTimeout(ctx, 30*time.Second)
-		defer fcancel()
-		msgs, err := client.Fetch(fetchCtx, cfg.Source.Channel)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] fetch: %v\n", time.Now().Format(time.RFC3339), err)
-			return
-		}
-		newCount := 0
+	processBatch := func(msgs []eitaa.Message) (newCount int) {
 		for _, m := range msgs {
 			if store.Seen(cfg.Source.Channel, m.ID) {
 				continue
@@ -222,12 +214,34 @@ func runRun(args []string) {
 			fmt.Printf("[%s] published #%d [%s] %s\n",
 				time.Now().Format("15:04:05"), m.ID, r.CategoryFa, truncate(sanitize(r.Title), 50))
 		}
+		return newCount
+	}
+
+	tick := func() {
+		fetchCtx, fcancel := context.WithTimeout(ctx, 30*time.Second)
+		defer fcancel()
+		msgs, err := client.Fetch(fetchCtx, cfg.Source.Channel)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] fetch: %v\n", time.Now().Format(time.RFC3339), err)
+			return
+		}
+		newCount := processBatch(msgs)
 		if newCount > 0 {
 			if err := store.Save(); err != nil {
 				fmt.Fprintf(os.Stderr, "save state: %v\n", err)
 			}
 		} else {
 			fmt.Printf("[%s] no new messages\n", time.Now().Format("15:04:05"))
+		}
+	}
+
+	// First run: if the seen-set is empty and the user requested
+	// backfill, walk Eitaa's ?before= pagination to pull historical
+	// posts before entering the polling loop.
+	if store.Count(cfg.Source.Channel) == 0 && cfg.Source.BackfillMax > 0 {
+		runBackfill(ctx, client, cfg.Source.Channel, cfg.Source.BackfillMax, processBatch)
+		if err := store.Save(); err != nil {
+			fmt.Fprintf(os.Stderr, "save state after backfill: %v\n", err)
 		}
 	}
 
@@ -243,6 +257,53 @@ func runRun(args []string) {
 			tick()
 		}
 	}
+}
+
+// runBackfill walks Eitaa's ?before= pagination backwards from the
+// current page until either max historical messages have been
+// collected or the channel has no older posts. Each page is fed to
+// processBatch in oldest-first order so the publisher sees the
+// historical messages in chronological order.
+func runBackfill(ctx context.Context, client *eitaa.Client, channel string, max int,
+	processBatch func([]eitaa.Message) int,
+) {
+	fmt.Printf("[%s] backfill start (max %d)\n", time.Now().Format("15:04:05"), max)
+
+	fetchCtx, fcancel := context.WithTimeout(ctx, 30*time.Second)
+	page, err := client.Fetch(fetchCtx, channel)
+	fcancel()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] backfill fetch: %v\n", time.Now().Format(time.RFC3339), err)
+		return
+	}
+	collected := []eitaa.Message{}
+	collected = append(collected, page...)
+
+	for len(collected) < max {
+		if len(page) == 0 {
+			break
+		}
+		oldest := page[0].ID // Parse returns ascending order
+		fetchCtx, fcancel := context.WithTimeout(ctx, 30*time.Second)
+		next, err := client.FetchBefore(fetchCtx, channel, oldest)
+		fcancel()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] backfill before=%d: %v\n",
+				time.Now().Format(time.RFC3339), oldest, err)
+			break
+		}
+		if len(next) == 0 {
+			break
+		}
+		collected = append(next, collected...)
+		page = next
+	}
+	if len(collected) > max {
+		collected = collected[len(collected)-max:]
+	}
+	count := processBatch(collected)
+	fmt.Printf("[%s] backfill done: %d messages, %d processed\n",
+		time.Now().Format("15:04:05"), len(collected), count)
 }
 
 func mustLoad(path string) *config.Config {

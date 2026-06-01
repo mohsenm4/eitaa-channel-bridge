@@ -55,9 +55,18 @@ func New() *Client {
 	}
 }
 
-// FetchRaw downloads the HTML for the channel page and returns it as a string.
+// FetchRaw downloads the HTML for the channel's latest page.
 func (c *Client) FetchRaw(ctx context.Context, channel string) (string, error) {
-	url := fmt.Sprintf("%s/%s", c.BaseURL, channel)
+	return c.fetchRaw(ctx, fmt.Sprintf("%s/%s", c.BaseURL, channel))
+}
+
+// FetchRawBefore downloads the HTML for the page of messages older
+// than beforeID, using Eitaa's `?before=` pagination.
+func (c *Client) FetchRawBefore(ctx context.Context, channel string, beforeID int) (string, error) {
+	return c.fetchRaw(ctx, fmt.Sprintf("%s/%s?before=%d", c.BaseURL, channel, beforeID))
+}
+
+func (c *Client) fetchRaw(ctx context.Context, url string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
@@ -83,10 +92,21 @@ func (c *Client) FetchRaw(ctx context.Context, channel string) (string, error) {
 	return string(body), nil
 }
 
-// Fetch downloads the channel page and parses messages from it.
+// Fetch downloads the channel's latest page and parses messages from it.
 // Messages are returned in ascending order by ID (oldest first).
 func (c *Client) Fetch(ctx context.Context, channel string) ([]Message, error) {
 	raw, err := c.FetchRaw(ctx, channel)
+	if err != nil {
+		return nil, err
+	}
+	return Parse(channel, raw)
+}
+
+// FetchBefore downloads the page of messages strictly older than beforeID.
+// Messages are returned in ascending order by ID (oldest first).
+// Returns an empty slice when no older messages exist.
+func (c *Client) FetchBefore(ctx context.Context, channel string, beforeID int) ([]Message, error) {
+	raw, err := c.FetchRawBefore(ctx, channel, beforeID)
 	if err != nil {
 		return nil, err
 	}

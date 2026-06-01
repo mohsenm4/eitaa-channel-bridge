@@ -5,6 +5,8 @@
 source:
   channel: Merajyan           # channel username, without the @
   poll_interval: 10s          # how often to check (e.g. 10s, 5m, 1h)
+  backfill_max: 200           # on FIRST run only, walk back this many older
+                              # messages via ?before= pagination. 0 disables.
 
 # ── publishing: classify and filter posts ───────────────────────────
 # A post is published only if it matches a category here OR falls back

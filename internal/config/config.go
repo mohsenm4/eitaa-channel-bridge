@@ -32,6 +32,7 @@ const EnvPrefix = "EITAA_BRIDGE"
 var envBindings = []string{
 	"source.channel",
 	"source.poll_interval",
+	"source.backfill_max",
 	"target.type",
 	"target.html.output_dir",
 	"target.html.site_title",
@@ -54,9 +55,17 @@ type Config struct {
 }
 
 // Source describes the channel to read from.
+//
+// BackfillMax controls how many historical messages to walk back through
+// on the FIRST run (when the seen-set for this channel is empty). Eitaa's
+// public page only shows the latest ~5–15 posts; setting BackfillMax > 0
+// makes the bridge follow the `?before=` pagination on startup until
+// BackfillMax messages have been collected or the channel runs out.
+// 0 disables backfill.
 type Source struct {
 	Channel      string        `yaml:"channel"`
 	PollInterval time.Duration `yaml:"poll_interval"`
+	BackfillMax  int           `yaml:"backfill_max"`
 }
 
 // Publishing describes how the bridge classifies and filters posts.

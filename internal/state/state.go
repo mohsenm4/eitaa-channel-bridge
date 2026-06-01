@@ -50,6 +50,12 @@ func (s *Store) Seen(channel string, id int) bool {
 	return s.data[channel] != nil && s.data[channel][id]
 }
 
+// Count returns how many message IDs are recorded for the channel.
+// Useful to decide whether we are on the very first run.
+func (s *Store) Count(channel string) int {
+	return len(s.data[channel])
+}
+
 // Mark records a message ID as seen.
 func (s *Store) Mark(channel string, id int) {
 	if s.data[channel] == nil {
