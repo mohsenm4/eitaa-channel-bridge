@@ -13,7 +13,7 @@ config.yml
 
 # Runtime state and archives
 data/seen.json
-data/messages.jsonl
+data/*.jsonl
 data/last_dump.json
 data/raw.html
 data/*.log
