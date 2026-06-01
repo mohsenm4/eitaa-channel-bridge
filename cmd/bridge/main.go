@@ -1,37 +1,21 @@
-// Command bridge reads messages from an Eitaa channel, classifies them
-// according to the posting guide, filters them by the configured
-// publishing rules, and delivers the rest to the configured target.
-//
-// Subcommands:
-//
-//	bridge dump   — fetch the channel once, parse + route every message
-//	                and write JSON to data/. No publishing.
-//	bridge run    — poll the channel on source.poll_interval and publish
-//	                each new message that matches the publishing rules.
-//
-// Both commands read config.yaml (override with --config) for source
-// channel, publishing rules, and target. Every config value can be
-// overridden by an environment variable — see internal/config.
 package main
 
 import (
-	"errors"
 	"fmt"
-	"log/slog"
 	"os"
-	"strings"
 
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/config"
+	"github.com/mohsenm4/eitaa-channel-bridge/internal/utils"
 )
 
-const defaultConfigPath = "config.yaml"
+const defaultConfigPath = config.DefaultPath
 
 func main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
-	log := newLogger()
+	log := utils.NewLogger()
 	switch os.Args[1] {
 	case "dump":
 		runDump(log, os.Args[2:])
@@ -73,75 +57,4 @@ env:
 config:
   See config.yaml.example for the schema.
 `)
-}
-
-// newLogger returns a slog logger that writes to stderr. Level is INFO
-// unless EITAA_BRIDGE_LOG_LEVEL is set.
-func newLogger() *slog.Logger {
-	level := slog.LevelInfo
-	if s := os.Getenv("EITAA_BRIDGE_LOG_LEVEL"); s != "" {
-		switch strings.ToLower(s) {
-		case "debug":
-			level = slog.LevelDebug
-		case "info":
-			level = slog.LevelInfo
-		case "warn", "warning":
-			level = slog.LevelWarn
-		case "error":
-			level = slog.LevelError
-		}
-	}
-	h := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: level,
-		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
-			if a.Key == slog.TimeKey {
-				// Compact time format for console.
-				return slog.String("t", a.Value.Time().Format("15:04:05"))
-			}
-			return a
-		},
-	})
-	return slog.New(h)
-}
-
-func mustLoad(path string) *config.Config {
-	cfg, err := config.Load(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			fatal("config file %s not found — copy config.yaml.example to config.yaml and fill it in", path)
-		}
-		fatal("config: %v", err)
-	}
-	return cfg
-}
-
-func sanitize(s string) string {
-	out := make([]rune, 0, len(s))
-	for _, r := range s {
-		if r == '\n' || r == '\r' || r == '\t' {
-			out = append(out, ' ')
-			continue
-		}
-		out = append(out, r)
-	}
-	return string(out)
-}
-
-func truncate(s string, max int) string {
-	rs := []rune(s)
-	if len(rs) <= max {
-		return s
-	}
-	return string(rs[:max]) + "…"
-}
-
-// displayTitle returns a single-line, max-N-rune preview of s,
-// suitable for inclusion in log lines.
-func displayTitle(s string, max int) string {
-	return truncate(sanitize(s), max)
-}
-
-func fatal(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "error: "+format+"\n", a...)
-	os.Exit(1)
 }

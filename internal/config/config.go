@@ -23,6 +23,9 @@ import (
 	"github.com/spf13/viper"
 )
 
+// DefaultPath is the path Load looks at when called without an argument.
+const DefaultPath = "config.yaml"
+
 // EnvPrefix is the prefix for every environment-variable override.
 // Example: EITAA_BRIDGE_SOURCE_CHANNEL overrides source.channel.
 const EnvPrefix = "EITAA_BRIDGE"
@@ -163,6 +166,25 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// MustLoad is Load with the CLI-style "exit on error" behaviour: a
+// missing config file prints a hint about config.yaml.example and
+// any other error is printed verbatim. Intended for short-lived
+// commands; library callers should use Load and handle the error.
+func MustLoad(path string) *Config {
+	cfg, err := Load(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr,
+				"error: config file %s not found — copy config.yaml.example to config.yaml and fill it in\n",
+				path)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "error: config: %v\n", err)
+		os.Exit(1)
+	}
+	return cfg
 }
 
 // useYAMLTags tells mapstructure to read the same struct tags that

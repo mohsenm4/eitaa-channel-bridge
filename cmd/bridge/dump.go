@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/mohsenm4/eitaa-channel-bridge/internal/config"
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/eitaa"
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/jsonio"
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/publisher"
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/router"
+	"github.com/mohsenm4/eitaa-channel-bridge/internal/utils"
 )
 
 // runDump fetches the channel once and writes raw HTML + routed JSON
@@ -21,10 +23,10 @@ func runDump(log *slog.Logger, args []string) {
 	cfgPath := fs.String("config", defaultConfigPath, "path to config file")
 	_ = fs.Parse(args)
 
-	cfg := mustLoad(*cfgPath)
+	cfg := config.MustLoad(*cfgPath)
 	dataDir := filepath.Dir(cfg.Storage.ArchiveFile)
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		fatal("mkdir %s: %v", dataDir, err)
+		utils.Fatal("mkdir %s: %v", dataDir, err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -33,26 +35,26 @@ func runDump(log *slog.Logger, args []string) {
 	client := eitaa.New()
 	raw, err := client.FetchRaw(ctx, cfg.Source.Channel)
 	if err != nil {
-		fatal("fetch: %v", err)
+		utils.Fatal("fetch: %v", err)
 	}
 	rawPath := filepath.Join(dataDir, "raw.html")
 	if err := os.WriteFile(rawPath, []byte(raw), 0o644); err != nil {
-		fatal("write raw: %v", err)
+		utils.Fatal("write raw: %v", err)
 	}
 
 	msgs, err := eitaa.Parse(cfg.Source.Channel, raw)
 	if err != nil {
-		fatal("parse: %v", err)
+		utils.Fatal("parse: %v", err)
 	}
 	rt := router.New(cfg.Source.Channel, cfg.Publishing.Categories, cfg.Publishing.Default)
 	routed := rt.RouteAll(msgs)
 
 	prettyPath := filepath.Join(dataDir, "last_dump.json")
 	if err := jsonio.WriteIndented(prettyPath, routed); err != nil {
-		fatal("write pretty: %v", err)
+		utils.Fatal("write pretty: %v", err)
 	}
 	if err := jsonio.WriteJSONL(cfg.Storage.ArchiveFile, msgs); err != nil {
-		fatal("write archive: %v", err)
+		utils.Fatal("write archive: %v", err)
 	}
 
 	type decision struct {
@@ -90,7 +92,7 @@ func runDump(log *slog.Logger, args []string) {
 			"id", d.Routed.ID,
 			"category", d.Routed.CategoryFa,
 			"reason", d.Reason,
-			"title", displayTitle(title, 56),
+			"title", utils.DisplayTitle(title, 56),
 		}
 		if d.OK {
 			log.Info("decision publish", attrs...)

@@ -16,6 +16,7 @@ import (
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/publisher"
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/router"
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/state"
+	"github.com/mohsenm4/eitaa-channel-bridge/internal/utils"
 )
 
 // runner holds everything one bridge process needs.
@@ -77,7 +78,7 @@ func (r *runner) processBatch(ctx context.Context, msgs []eitaa.Message) int {
 		r.log.Info("published",
 			"id", m.ID,
 			"category", routed.CategoryFa,
-			"title", displayTitle(routed.Title, 50))
+			"title", utils.DisplayTitle(routed.Title, 50))
 	}
 	return processed
 }
@@ -169,10 +170,10 @@ func runRun(log *slog.Logger, args []string) {
 	cfgPath := fs.String("config", defaultConfigPath, "path to config file")
 	_ = fs.Parse(args)
 
-	cfg := mustLoad(*cfgPath)
+	cfg := config.MustLoad(*cfgPath)
 	r, err := newRunner(cfg, log)
 	if err != nil {
-		fatal("init: %v", err)
+		utils.Fatal("init: %v", err)
 	}
 	defer r.Close()
 
