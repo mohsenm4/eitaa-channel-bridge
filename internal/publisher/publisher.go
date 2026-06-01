@@ -39,9 +39,15 @@ func New(cfg config.Target) (Publisher, error) {
 	}
 }
 
-// ShouldPublish applies the publishing.include_hashtags / skip_hashtags
-// rules from config to a routed message. It returns (publish, reason).
-// The reason is suitable for human-readable logs.
+// ShouldPublish applies the publishing rules from config to a routed
+// message and returns (publish, reason). The reason is suitable for
+// human-readable logs.
+//
+// A message is published if and only if:
+//   - none of its hashtags is in publishing.skip_hashtags, AND
+//   - the router assigned it a category (either by matching a
+//     publishing.categories entry or by falling back to
+//     publishing.default_category).
 func ShouldPublish(p config.Publishing, msg router.Routed) (bool, string) {
 	tags := tagSet(msg.Hashtags)
 	for _, skip := range p.SkipHashtags {
@@ -49,18 +55,10 @@ func ShouldPublish(p config.Publishing, msg router.Routed) (bool, string) {
 			return false, "skip-hashtag #" + skip
 		}
 	}
-	if msg.Skip {
-		return false, "router skip"
+	if msg.Category == "" {
+		return false, "no matching category"
 	}
-	if len(p.IncludeHashtags) == 0 {
-		return true, "all"
-	}
-	for _, want := range p.IncludeHashtags {
-		if tags[want] {
-			return true, "#" + want
-		}
-	}
-	return false, "no matching include-hashtag"
+	return true, "category " + msg.Category
 }
 
 func tagSet(tags []string) map[string]bool {

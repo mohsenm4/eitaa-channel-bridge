@@ -6,21 +6,39 @@ source:
   channel: Merajyan           # channel username, without the @
   poll_interval: 10s          # how often to check (e.g. 10s, 5m, 1h)
 
-# ── publishing: which posts to publish, by hashtag ──────────────────
-# include_hashtags is an allow-list. A post is published only if it
-# carries at least one of these hashtags. Leave empty to publish
-# everything that is not explicitly skipped.
-# skip_hashtags is a deny-list and always wins.
-# Both lists accept entries with or without a leading "#".
+# ── publishing: classify and filter posts ───────────────────────────
+# A post is published only if it matches a category here OR falls back
+# to default_category. A post that carries any skip_hashtag is always
+# dropped, regardless of category. Hashtag entries accept the leading
+# "#" optionally.
 publishing:
-  include_hashtags:
-    - گزارش_تصویری
-    - اطلاعیه
-    - مناسبت
-    - کمک_مالی
-    - خبر
-    - معرفی
-    - پاسخ
+  categories:
+    - hashtag: گزارش_تصویری
+      slug: reports
+      label: گزارش‌ها
+    - hashtag: اطلاعیه
+      slug: announcements
+      label: اطلاعیه‌ها
+    - hashtag: مناسبت
+      slug: occasions
+      label: مناسبت‌ها
+    - hashtag: کمک_مالی
+      slug: support
+      label: حمایت
+    - hashtag: خبر
+      slug: news
+      label: اخبار
+    - hashtag: معرفی
+      slug: about
+      label: معرفی
+    - hashtag: پاسخ
+      slug: faq
+      label: سوالات متداول
+  # Optional. Posts without any matching category land here. Omit
+  # default_category to drop unmatched posts instead.
+  default_category:
+    slug: general
+    label: عمومی
   skip_hashtags:
     - خصوصی
     - نمایش_نده

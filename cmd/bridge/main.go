@@ -102,7 +102,8 @@ func runDump(args []string) {
 	if err != nil {
 		fatal("parse: %v", err)
 	}
-	routed := router.RouteAll(msgs)
+	rt := router.New(cfg.Source.Channel, cfg.Publishing.Categories, cfg.Publishing.Default)
+	routed := rt.RouteAll(msgs)
 
 	prettyPath := filepath.Join(dataDir, "last_dump.json")
 	if err := writeJSONIndented(prettyPath, routed); err != nil {
@@ -164,16 +165,22 @@ func runRun(args []string) {
 	defer pub.Close()
 
 	client := eitaa.New()
+	rt := router.New(cfg.Source.Channel, cfg.Publishing.Categories, cfg.Publishing.Default)
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	fmt.Printf("source:   @%s\n", cfg.Source.Channel)
 	fmt.Printf("target:   %s\n", pub.Name())
 	fmt.Printf("interval: %s\n", cfg.Source.PollInterval)
-	if len(cfg.Publishing.IncludeHashtags) > 0 {
-		fmt.Printf("publish:  #%s\n", join(cfg.Publishing.IncludeHashtags, " #"))
-	} else {
-		fmt.Printf("publish:  ALL (no include filter)\n")
+	if len(cfg.Publishing.Categories) > 0 {
+		tags := make([]string, len(cfg.Publishing.Categories))
+		for i, c := range cfg.Publishing.Categories {
+			tags[i] = c.Hashtag
+		}
+		fmt.Printf("publish:  #%s\n", join(tags, " #"))
+	}
+	if cfg.Publishing.Default != nil {
+		fmt.Printf("default:  %s (%s)\n", cfg.Publishing.Default.Slug, cfg.Publishing.Default.Label)
 	}
 	if len(cfg.Publishing.SkipHashtags) > 0 {
 		fmt.Printf("skip:     #%s\n", join(cfg.Publishing.SkipHashtags, " #"))
@@ -193,7 +200,7 @@ func runRun(args []string) {
 			if store.Seen(cfg.Source.Channel, m.ID) {
 				continue
 			}
-			r := router.Route(m)
+			r := rt.Route(m)
 			ok, reason := publisher.ShouldPublish(cfg.Publishing, r)
 			if !ok {
 				fmt.Printf("[%s] skipped #%d (%s)\n",

@@ -2,13 +2,19 @@
 // and extracts the display fields (title, subtitle, event date) that the
 // channel posting guide describes.
 //
+// The list of categories and the default-bucket policy come from
+// config.Publishing; only the marker prefixes (🔻 / 🟩 / 🗓) and the
+// fallback-title heuristics live in code.
+//
 // See docs/posting-guide.md for the rules this implements.
 package router
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
+	"github.com/mohsenm4/eitaa-channel-bridge/internal/config"
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/eitaa"
 )
 
@@ -16,13 +22,12 @@ import (
 type Routed struct {
 	eitaa.Message
 
-	Category   string   `json:"category"`            // machine slug, e.g. "reports"
-	CategoryFa string   `json:"category_fa"`         // Persian label for UI
-	Title      string   `json:"title"`               // display title
-	Subtitle   string   `json:"subtitle,omitempty"`  // optional subtitle
-	EventDate  string   `json:"event_date,omitempty"`// Persian date string (free-form)
-	Hashtags   []string `json:"hashtags"`            // every #tag found in the message
-	Skip       bool     `json:"skip"`                // true → do not publish to the site
+	Category   string   `json:"category,omitempty"`    // machine slug; empty = unclassified
+	CategoryFa string   `json:"category_fa,omitempty"` // Persian label for UI
+	Title      string   `json:"title"`                 // display title
+	Subtitle   string   `json:"subtitle,omitempty"`    // optional subtitle
+	EventDate  string   `json:"event_date,omitempty"`  // Persian date string (free-form)
+	Hashtags   []string `json:"hashtags"`              // every #tag found in the message
 }
 
 // Marker prefixes the channel posting guide tells admins to use.
@@ -31,67 +36,92 @@ const (
 	SubtitleMarker = "🟩"
 	DateMarker     = "🗓"
 
-	DefaultCategory   = "general"
-	DefaultCategoryFa = "عمومی"
+	titleMaxLen = 80
 )
 
-type categoryRule struct {
-	Hashtag string // without the leading #
-	Slug    string
-	Label   string
+// Router classifies messages for a single channel.
+type Router struct {
+	channelNameRe *regexp.Regexp
+	categories    []config.Category
+	defaultCat    *config.Category
 }
 
-// defaultRules maps a category hashtag to a site category.
-// First match wins — order matters when a post carries multiple tags.
-var defaultRules = []categoryRule{
-	{"گزارش_تصویری", "reports", "گزارش‌ها"},
-	{"اطلاعیه", "announcements", "اطلاعیه‌ها"},
-	{"مناسبت", "occasions", "مناسبت‌ها"},
-	{"کمک_مالی", "support", "حمایت"},
-	{"خبر", "news", "اخبار"},
-	{"معرفی", "about", "معرفی"},
-	{"پاسخ", "faq", "سوالات متداول"},
+// New builds a Router for the given channel and category set.
+// Categories come from config; the channel name is used to recognise
+// self-reference lines when picking a fallback title.
+func New(channel string, categories []config.Category, defaultCat *config.Category) *Router {
+	// Skip lines that are just the channel handle or "کانال رسمی <name>".
+	pattern := fmt.Sprintf(`@%s|^%s$|کانال رسمی`, regexp.QuoteMeta(channel), regexp.QuoteMeta(channel))
+	return &Router{
+		channelNameRe: regexp.MustCompile("(?i)" + pattern),
+		categories:    categories,
+		defaultCat:    defaultCat,
+	}
 }
-
-// skipHashtags marks posts that must never be published to the site.
-var skipHashtags = map[string]bool{
-	"خصوصی":     true,
-	"نمایش_نده": true,
-}
-
-// hashtag matches Persian/Latin word chars and underscores after a #.
-var hashtagRe = regexp.MustCompile(`#([\p{L}\p{N}_]+)`)
-
-// channelNameRe matches lines that are just the institute self-reference,
-// so they are not mistaken for the post title.
-var channelNameRe = regexp.MustCompile(`@Merajyan|موسسه_معراج|کانال رسمی`)
 
 // Route classifies a single message.
-func Route(msg eitaa.Message) Routed {
-	r := Routed{Message: msg, Category: DefaultCategory, CategoryFa: DefaultCategoryFa}
-	r.Hashtags = extractHashtags(msg.Text)
-	r.Skip = anyMatch(r.Hashtags, skipHashtags)
-	r.Category, r.CategoryFa = pickCategory(r.Hashtags)
-	r.Title, r.Subtitle, r.EventDate = extractMarkers(msg.Text)
-	if r.Title == "" {
-		r.Title = fallbackTitle(msg.Text)
+func (r *Router) Route(msg eitaa.Message) Routed {
+	out := Routed{Message: msg}
+	out.Hashtags = extractHashtags(msg.Text)
+	out.Title, out.Subtitle, out.EventDate = extractMarkers(msg.Text)
+	if cat := r.pickCategory(out.Hashtags); cat != nil {
+		out.Category = cat.Slug
+		out.CategoryFa = cat.Label
+	} else if r.defaultCat != nil {
+		out.Category = r.defaultCat.Slug
+		out.CategoryFa = r.defaultCat.Label
 	}
-	return r
-}
-
-// RouteAll runs Route over a slice of messages.
-func RouteAll(msgs []eitaa.Message) []Routed {
-	out := make([]Routed, 0, len(msgs))
-	for _, m := range msgs {
-		out = append(out, Route(m))
+	if out.Title == "" {
+		out.Title = r.fallbackTitle(msg.Text)
 	}
 	return out
 }
 
+// RouteAll runs Route over a slice of messages.
+func (r *Router) RouteAll(msgs []eitaa.Message) []Routed {
+	out := make([]Routed, len(msgs))
+	for i, m := range msgs {
+		out[i] = r.Route(m)
+	}
+	return out
+}
+
+// pickCategory returns the first matching category, or nil if none match.
+// Order in the config determines priority when a post carries multiple tags.
+func (r *Router) pickCategory(tags []string) *config.Category {
+	for _, t := range tags {
+		for i := range r.categories {
+			if r.categories[i].Hashtag == t {
+				return &r.categories[i]
+			}
+		}
+	}
+	return nil
+}
+
+func (r *Router) fallbackTitle(text string) string {
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || line == "." {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if r.channelNameRe.MatchString(line) {
+			continue
+		}
+		return truncateRunes(line, titleMaxLen)
+	}
+	return ""
+}
+
+var hashtagRe = regexp.MustCompile(`#([\p{L}\p{N}_]+)`)
+
 func extractHashtags(text string) []string {
 	matches := hashtagRe.FindAllStringSubmatch(text, -1)
-	seen := map[string]bool{}
-	var tags []string
+	tags := make([]string, 0, len(matches))
+	seen := make(map[string]bool, len(matches))
 	for _, m := range matches {
 		if seen[m[1]] {
 			continue
@@ -100,26 +130,6 @@ func extractHashtags(text string) []string {
 		tags = append(tags, m[1])
 	}
 	return tags
-}
-
-func anyMatch(tags []string, set map[string]bool) bool {
-	for _, t := range tags {
-		if set[t] {
-			return true
-		}
-	}
-	return false
-}
-
-func pickCategory(tags []string) (string, string) {
-	for _, t := range tags {
-		for _, rule := range defaultRules {
-			if rule.Hashtag == t {
-				return rule.Slug, rule.Label
-			}
-		}
-	}
-	return DefaultCategory, DefaultCategoryFa
 }
 
 func extractMarkers(text string) (title, subtitle, eventDate string) {
@@ -137,37 +147,10 @@ func extractMarkers(text string) (title, subtitle, eventDate string) {
 	return title, subtitle, eventDate
 }
 
-func fallbackTitle(text string) string {
-	for _, raw := range strings.Split(text, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || line == "." {
-			continue
-		}
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
-		if channelNameRe.MatchString(line) {
-			continue
-		}
-		return truncateRunes(line, 80)
-	}
-	return ""
-}
-
 func truncateRunes(s string, max int) string {
 	rs := []rune(s)
 	if len(rs) <= max {
 		return s
 	}
 	return string(rs[:max]) + "…"
-}
-
-// CategoryLabels returns the user-facing Persian label for every known
-// category. Useful for building UI filter tabs.
-func CategoryLabels() map[string]string {
-	out := map[string]string{DefaultCategory: DefaultCategoryFa}
-	for _, r := range defaultRules {
-		out[r.Slug] = r.Label
-	}
-	return out
 }

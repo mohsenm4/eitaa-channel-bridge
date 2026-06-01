@@ -3,7 +3,7 @@
 // The config has four top-level sections:
 //
 //	source      — which Eitaa channel to read and how often
-//	publishing  — which posts to publish, by hashtag
+//	publishing  — which categories of post to publish, by hashtag
 //	target      — where to publish them
 //	storage     — paths for the seen-set and the raw message archive
 //
@@ -36,14 +36,23 @@ type Source struct {
 	PollInterval time.Duration `yaml:"poll_interval"`
 }
 
-// Publishing describes which posts the bridge should forward.
-// IncludeHashtags is an allow-list: a post is forwarded only if it carries
-// at least one of these hashtags. An empty list means "forward everything
-// that is not explicitly skipped".
-// SkipHashtags is a deny-list that always wins over the allow-list.
+// Publishing describes how the bridge classifies and filters posts.
+//
+// Categories drives both classification (which slug/label a post gets)
+// and filtering (a post is only published if it matches at least one
+// category — unless Default is set, in which case unmatched posts land
+// there). SkipHashtags always wins.
 type Publishing struct {
-	IncludeHashtags []string `yaml:"include_hashtags"`
-	SkipHashtags    []string `yaml:"skip_hashtags"`
+	Categories   []Category `yaml:"categories"`
+	Default      *Category  `yaml:"default_category,omitempty"`
+	SkipHashtags []string   `yaml:"skip_hashtags"`
+}
+
+// Category maps a hashtag to a site category.
+type Category struct {
+	Hashtag string `yaml:"hashtag"`
+	Slug    string `yaml:"slug"`
+	Label   string `yaml:"label"`
 }
 
 // Target describes where parsed messages should be published.
@@ -138,16 +147,22 @@ func (c *Config) applyDefaults() {
 		}
 	}
 	// Strip leading # from hashtag entries so users can write either form.
-	c.Publishing.IncludeHashtags = stripHashes(c.Publishing.IncludeHashtags)
 	c.Publishing.SkipHashtags = stripHashes(c.Publishing.SkipHashtags)
+	for i := range c.Publishing.Categories {
+		c.Publishing.Categories[i].Hashtag = stripHash(c.Publishing.Categories[i].Hashtag)
+	}
 }
 
 func stripHashes(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, s := range in {
-		out = append(out, strings.TrimPrefix(strings.TrimSpace(s), "#"))
+		out = append(out, stripHash(s))
 	}
 	return out
+}
+
+func stripHash(s string) string {
+	return strings.TrimPrefix(strings.TrimSpace(s), "#")
 }
 
 func (c *Config) validate() error {
@@ -159,6 +174,17 @@ func (c *Config) validate() error {
 	}
 	if c.Source.PollInterval < 5*time.Second {
 		return fmt.Errorf("source.poll_interval too small (%s): use at least 5s", c.Source.PollInterval)
+	}
+	for i, cat := range c.Publishing.Categories {
+		if cat.Hashtag == "" || cat.Slug == "" || cat.Label == "" {
+			return fmt.Errorf("publishing.categories[%d]: hashtag, slug and label are all required", i)
+		}
+	}
+	if c.Publishing.Default != nil {
+		d := c.Publishing.Default
+		if d.Slug == "" || d.Label == "" {
+			return errors.New("publishing.default_category: slug and label are required")
+		}
 	}
 	switch c.Target.Type {
 	case TargetFile:
