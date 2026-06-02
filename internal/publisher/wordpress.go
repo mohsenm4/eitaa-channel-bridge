@@ -26,6 +26,12 @@ type WordPress struct {
 
 	// Lazy-loaded: WP category Name -> ID. Filled on first Publish.
 	catByName map[string]int
+
+	// In-memory: the WP post ID of the most recently published post.
+	// Archive (#آرشیو) follow-ups attach their photos to this post.
+	// Resets to 0 on restart — initial archive messages after restart
+	// log a warning and skip.
+	lastPostID int
 }
 
 func NewWordPress(cfg config.WordPressTarget, log *slog.Logger) *WordPress {
@@ -51,6 +57,9 @@ func (p *WordPress) Name() string { return "wordpress:" + p.cfg.URL }
 func (p *WordPress) Close() error { return nil }
 
 func (p *WordPress) Publish(ctx context.Context, msg router.Routed) error {
+	if msg.IsArchive() {
+		return p.publishArchive(ctx, msg)
+	}
 	if msg.CategoryFa == "" {
 		return fmt.Errorf("routed message has no category label")
 	}
@@ -100,6 +109,8 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) error {
 		return fmt.Errorf("decode WP post response: %w (body: %s)", err, snippet(resp))
 	}
 
+	p.lastPostID = out.ID
+
 	p.log.Info("wordpress: published",
 		"eitaa_id", msg.ID,
 		"wp_id", out.ID,
@@ -110,6 +121,107 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) error {
 		"link", out.Link,
 	)
 	return nil
+}
+
+// publishArchive uploads the photos from a #آرشیو follow-up and attaches
+// them to the most recently published post. The post's content is also
+// extended with <img> tags so the gallery shows up in the draft preview
+// without admin intervention.
+func (p *WordPress) publishArchive(ctx context.Context, msg router.Routed) error {
+	if p.lastPostID == 0 {
+		return fmt.Errorf("archive message %d arrived with no preceding post in this session — skipping", msg.ID)
+	}
+	if len(msg.Photos) == 0 {
+		p.log.Info("wordpress: archive message has no photos — nothing to attach",
+			"eitaa_id", msg.ID, "wp_post", p.lastPostID)
+		return nil
+	}
+
+	parentID := p.lastPostID
+	var imgTags []string
+	var uploaded []int
+	for i, photo := range msg.Photos {
+		filename := fmt.Sprintf("eitaa-%s-%d-archive-%d.jpg", msg.Channel, msg.ID, i+1)
+		mediaID, err := p.uploadPhoto(ctx, photo, filename)
+		if err != nil {
+			p.log.Warn("wordpress: archive photo upload failed",
+				"eitaa_id", msg.ID, "photo", photo, "err", err)
+			continue
+		}
+		if err := p.attachMediaToPost(ctx, mediaID, parentID); err != nil {
+			p.log.Warn("wordpress: archive media attach failed",
+				"eitaa_id", msg.ID, "media", mediaID, "post", parentID, "err", err)
+			continue
+		}
+		uploaded = append(uploaded, mediaID)
+		if src := p.mediaSourceURL(ctx, mediaID); src != "" {
+			imgTags = append(imgTags, fmt.Sprintf(`<p><img src=%q alt=""/></p>`, src))
+		}
+	}
+
+	if len(imgTags) > 0 {
+		if err := p.appendToPostContent(ctx, parentID, "\n"+strings.Join(imgTags, "\n")); err != nil {
+			p.log.Warn("wordpress: appending archive imgs to post failed",
+				"post", parentID, "err", err)
+		}
+	}
+
+	p.log.Info("wordpress: archive attached",
+		"eitaa_id", msg.ID,
+		"wp_post", parentID,
+		"photos", len(uploaded),
+	)
+	return nil
+}
+
+func (p *WordPress) attachMediaToPost(ctx context.Context, mediaID, postID int) error {
+	body, _ := json.Marshal(map[string]any{"post": postID})
+	path := fmt.Sprintf("/wp-json/wp/v2/media/%d", mediaID)
+	_, err := p.do(ctx, http.MethodPost, path, body)
+	return err
+}
+
+// mediaSourceURL fetches the public URL of a media item. Falls back to
+// empty string on error — the caller treats that as "skip the img tag"
+// rather than failing the whole archive flow.
+func (p *WordPress) mediaSourceURL(ctx context.Context, mediaID int) string {
+	path := fmt.Sprintf("/wp-json/wp/v2/media/%d", mediaID)
+	body, err := p.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return ""
+	}
+	var out struct {
+		SourceURL string `json:"source_url"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return ""
+	}
+	return out.SourceURL
+}
+
+// appendToPostContent reads the current post content and PATCHes it
+// with the original content + appended HTML. WP REST has no append
+// primitive so we do read-modify-write; that's fine for drafts.
+func (p *WordPress) appendToPostContent(ctx context.Context, postID int, extra string) error {
+	path := fmt.Sprintf("/wp-json/wp/v2/posts/%d?context=edit", postID)
+	body, err := p.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return err
+	}
+	var current struct {
+		Content struct {
+			Raw string `json:"raw"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(body, &current); err != nil {
+		return fmt.Errorf("decode post: %w", err)
+	}
+
+	updated, _ := json.Marshal(map[string]any{
+		"content": current.Content.Raw + extra,
+	})
+	_, err = p.do(ctx, http.MethodPost, fmt.Sprintf("/wp-json/wp/v2/posts/%d", postID), updated)
+	return err
 }
 
 // uploadPhoto downloads a photo from Eitaa and uploads it to WP's

@@ -35,13 +35,18 @@ func New(cfg config.Target, log *slog.Logger) (Publisher, error) {
 }
 
 // ShouldPublish returns (publish?, log-friendly reason). A message is
-// published iff no hashtag is in SkipHashtags and Category is non-empty.
+// published if it carries a recognised category — OR if it's an
+// #آرشیو follow-up, which has its own attach-to-previous flow in the
+// WordPress publisher.
 func ShouldPublish(p config.Publishing, msg router.Routed) (bool, string) {
 	tags := tagSet(msg.Hashtags)
 	for _, skip := range p.SkipHashtags {
 		if tags[skip] {
 			return false, "skip-hashtag #" + skip
 		}
+	}
+	if msg.IsArchive() {
+		return true, "archive — will attach to last post"
 	}
 	if msg.Category == "" {
 		return false, "no matching category"

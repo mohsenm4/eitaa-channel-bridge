@@ -92,6 +92,22 @@ func (r *Router) RouteAll(msgs []eitaa.Message) []Routed {
 	return out
 }
 
+// ArchiveHashtag identifies follow-up messages whose photos should be
+// attached to the most recently published post instead of producing a
+// new one.
+const ArchiveHashtag = "آرشیو"
+
+// IsArchive reports whether this message is a follow-up carrying extra
+// photos for the previous post.
+func (r Routed) IsArchive() bool {
+	for _, t := range r.Hashtags {
+		if t == ArchiveHashtag {
+			return true
+		}
+	}
+	return false
+}
+
 // pickCategory returns the first match; config order is the tie-breaker.
 func (r *Router) pickCategory(tags []string) *config.Category {
 	for _, t := range tags {
