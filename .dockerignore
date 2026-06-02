@@ -1,0 +1,35 @@
+.git
+.gitignore
+.gitattributes
+.github
+
+# Local runtime artifacts — never bake into the image
+data
+site
+*.log
+
+# Local env files — config comes from the host at run time
+.env
+.env.local
+.env.*.local
+
+# Editor / OS noise
+.vscode
+.idea
+.DS_Store
+*.swp
+
+# Docker assets themselves
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+
+# Build leftovers
+bin
+dist
+*.exe
+*.test
+*.out
+coverage.out
+**debug_bin**
