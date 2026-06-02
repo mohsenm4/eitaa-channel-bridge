@@ -62,11 +62,28 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) error {
 		return fmt.Errorf("WP category %q not found on the site — create it or fix the .env label", msg.CategoryFa)
 	}
 
+	// Upload the first photo (if any) as the featured image. A failure
+	// here is non-fatal: better to publish without the image than to
+	// stall the whole message.
+	var featuredID int
+	if len(msg.Photos) > 0 {
+		id, err := p.uploadPhoto(ctx, msg.Photos[0], featuredFilename(msg))
+		if err != nil {
+			p.log.Warn("wordpress: featured image upload failed — publishing without",
+				"eitaa_id", msg.ID, "photo", msg.Photos[0], "err", err)
+		} else {
+			featuredID = id
+		}
+	}
+
 	payload := map[string]any{
 		"title":      msg.Title,
 		"content":    p.renderHTML(msg),
 		"status":     p.cfg.Status,
 		"categories": []int{catID},
+	}
+	if featuredID != 0 {
+		payload["featured_media"] = featuredID
 	}
 	body, _ := json.Marshal(payload)
 
@@ -89,9 +106,105 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) error {
 		"status", p.cfg.Status,
 		"category", msg.CategoryFa,
 		"title", msg.Title,
+		"featured_media", featuredID,
 		"link", out.Link,
 	)
 	return nil
+}
+
+// uploadPhoto downloads a photo from Eitaa and uploads it to WP's
+// media library. Returns the new media ID for use as featured_media.
+func (p *WordPress) uploadPhoto(ctx context.Context, photoURL, filename string) (int, error) {
+	data, contentType, err := p.downloadPhoto(ctx, photoURL)
+	if err != nil {
+		return 0, fmt.Errorf("download photo: %w", err)
+	}
+	return p.uploadMedia(ctx, data, contentType, filename)
+}
+
+func (p *WordPress) downloadPhoto(ctx context.Context, photoURL string) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, photoURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("User-Agent",
+		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "+
+			"(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	resp, err := p.http.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("download %s: HTTP %d", photoURL, resp.StatusCode)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", err
+	}
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" || ct == "application/octet-stream" {
+		ct = http.DetectContentType(data)
+	}
+	return data, ct, nil
+}
+
+func (p *WordPress) uploadMedia(ctx context.Context, data []byte, contentType, filename string) (int, error) {
+	url := strings.TrimRight(p.cfg.URL, "/") + "/wp-json/wp/v2/media"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return 0, err
+	}
+	req.SetBasicAuth(p.cfg.Username, p.cfg.AppPassword)
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, filename))
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent",
+		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "+
+			"(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+	resp, err := p.http.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("upload media: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("WP POST /wp-json/wp/v2/media: HTTP %d: %s",
+			resp.StatusCode, snippet(body))
+	}
+	var out struct {
+		ID int `json:"id"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return 0, fmt.Errorf("decode media response: %w (body: %s)", err, snippet(body))
+	}
+	return out.ID, nil
+}
+
+func featuredFilename(msg router.Routed) string {
+	ext := "jpg"
+	if len(msg.Photos) > 0 {
+		if e := extFromURL(msg.Photos[0]); e != "" {
+			ext = e
+		}
+	}
+	return fmt.Sprintf("eitaa-%s-%d.%s", msg.Channel, msg.ID, ext)
+}
+
+func extFromURL(u string) string {
+	// strip query
+	if i := strings.Index(u, "?"); i >= 0 {
+		u = u[:i]
+	}
+	if i := strings.LastIndex(u, "."); i >= 0 {
+		ext := strings.ToLower(u[i+1:])
+		switch ext {
+		case "jpg", "jpeg", "png", "gif", "webp":
+			return ext
+		}
+	}
+	return ""
 }
 
 func (p *WordPress) loadCategories(ctx context.Context) error {
