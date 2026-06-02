@@ -20,6 +20,11 @@ type Routed struct {
 	Subtitle   string   `json:"subtitle,omitempty"`
 	EventDate  string   `json:"event_date,omitempty"`
 	Hashtags   []string `json:"hashtags"`
+
+	// Warnings carry format problems the channel author should fix.
+	// The bridge still publishes the post (as a draft); the runner
+	// writes these to data/warnings.log for review.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Marker prefixes the channel posting guide tells admins to use.
@@ -68,6 +73,13 @@ func (r *Router) Route(msg eitaa.Message) Routed {
 	}
 	if out.Title == "" {
 		out.Title = r.fallbackTitle(msg.Text)
+		if out.Title != "" {
+			out.Warnings = append(out.Warnings,
+				"بدون "+TitleMarker+" — خط اول به‌عنوان عنوان گذاشته شد")
+		}
+	}
+	if out.EventDate == "" {
+		out.Warnings = append(out.Warnings, "بدون "+DateMarker+" — تاریخ تنظیم نشد")
 	}
 	return out
 }

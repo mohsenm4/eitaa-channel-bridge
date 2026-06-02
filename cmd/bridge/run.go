@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -69,6 +71,11 @@ func (r *runner) processBatch(ctx context.Context, msgs []eitaa.Message) int {
 		if err := r.pub.Publish(ctx, routed); err != nil {
 			r.log.Error("publish failed", "id", m.ID, "err", err)
 			continue
+		}
+		if len(routed.Warnings) > 0 {
+			if err := appendWarning(r.cfg.Storage.ArchiveFile, routed); err != nil {
+				r.log.Warn("warnings log write failed", "id", m.ID, "err", err)
+			}
 		}
 		if err := jsonio.Append(r.cfg.Storage.ArchiveFile, m); err != nil {
 			r.log.Warn("archive failed", "id", m.ID, "err", err)
@@ -193,4 +200,24 @@ func categoryTags(cats []config.Category) []string {
 		out[i] = c.Hashtag
 	}
 	return out
+}
+
+// appendWarning writes one human-readable line per problematic message
+// to data/warnings.log (alongside the archive). Format chosen to be
+// readable with `cat` — not JSON — so the operator can quickly skim it
+// and report issues back to the channel author.
+func appendWarning(archiveFile string, r router.Routed) error {
+	path := filepath.Join(filepath.Dir(archiveFile), "warnings.log")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "%s  msg=%d  link=%s  warnings=%q\n",
+		time.Now().Format("2006-01-02 15:04:05"),
+		r.ID, r.Link, strings.Join(r.Warnings, "؛ "))
+	return err
 }
