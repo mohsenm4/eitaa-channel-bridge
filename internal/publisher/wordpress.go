@@ -185,11 +185,6 @@ func (p *WordPress) do(ctx context.Context, method, path string, body []byte) ([
 
 func (p *WordPress) renderHTML(msg router.Routed) string {
 	var head strings.Builder
-	if msg.Subtitle != "" {
-		head.WriteString("<p><strong>")
-		head.WriteString(htmlEscape(msg.Subtitle))
-		head.WriteString("</strong></p>\n")
-	}
 	if msg.EventDate != "" {
 		head.WriteString("<p>📅 ")
 		head.WriteString(htmlEscape(msg.EventDate))
@@ -197,13 +192,18 @@ func (p *WordPress) renderHTML(msg router.Routed) string {
 	}
 
 	var body strings.Builder
-	titleTrim := strings.TrimSpace(msg.Title)
 	for _, raw := range strings.Split(msg.Text, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" || line == "." {
 			continue
 		}
-		if line == titleTrim {
+		// Drop the marker lines whose values are already in head/title.
+		if hasAnyPrefix(line, router.TitleMarker, router.DateMarker, router.SubtitleMarker) {
+			continue
+		}
+		// 📝 is a hint for readers; strip it but keep the content.
+		line = strings.TrimSpace(strings.TrimPrefix(line, router.BodyMarker))
+		if line == "" {
 			continue
 		}
 		if isHashtagOnlyLine(line) {
@@ -214,6 +214,15 @@ func (p *WordPress) renderHTML(msg router.Routed) string {
 		body.WriteString("</p>\n")
 	}
 	return head.String() + body.String()
+}
+
+func hasAnyPrefix(s string, prefixes ...string) bool {
+	for _, p := range prefixes {
+		if p != "" && strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func isHashtagOnlyLine(line string) bool {

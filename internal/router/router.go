@@ -23,10 +23,19 @@ type Routed struct {
 }
 
 // Marker prefixes the channel posting guide tells admins to use.
+// Authors prefix lines with these emoji so the bridge can pull the
+// title/date out and leave the rest as body.
+//
+// BodyMarker is a hint for human readers — the bridge strips it from
+// the line but otherwise treats the content as normal body text.
 const (
-	TitleMarker    = "🔻"
+	TitleMarker = "📌"
+	DateMarker  = "📅"
+	BodyMarker  = "📝"
+
+	// Deprecated, kept only so the Routed.Subtitle field can still be
+	// populated by legacy messages. New channel guide drops subtitles.
 	SubtitleMarker = "🟩"
-	DateMarker     = "🗓"
 
 	titleMaxLen = 80
 )
