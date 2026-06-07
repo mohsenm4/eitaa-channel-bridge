@@ -61,6 +61,12 @@ func (r *runner) processBatch(ctx context.Context, msgs []eitaa.Message) int {
 			continue
 		}
 		routed := r.rt.Route(m)
+		// Resolve parent post for #آرشیو follow-ups via the reply chain:
+		// the message replies to a published post; state remembers what
+		// target post ID that was. Works across restarts.
+		if m.ReplyToID > 0 {
+			routed.ParentPostID = r.store.PostID(r.cfg.Source.Channel, m.ReplyToID)
+		}
 		ok, reason := publisher.ShouldPublish(r.cfg.Publishing, routed)
 		if !ok {
 			r.log.Info("skipped", "id", m.ID, "reason", reason)
@@ -68,7 +74,8 @@ func (r *runner) processBatch(ctx context.Context, msgs []eitaa.Message) int {
 			processed++
 			continue
 		}
-		if err := r.pub.Publish(ctx, routed); err != nil {
+		postID, err := r.pub.Publish(ctx, routed)
+		if err != nil {
 			r.log.Error("publish failed", "id", m.ID, "err", err)
 			continue
 		}
@@ -80,10 +87,15 @@ func (r *runner) processBatch(ctx context.Context, msgs []eitaa.Message) int {
 		if err := jsonio.Append(r.cfg.Storage.ArchiveFile, m); err != nil {
 			r.log.Warn("archive failed", "id", m.ID, "err", err)
 		}
-		r.store.Mark(r.cfg.Source.Channel, m.ID)
+		if postID > 0 {
+			r.store.MarkWithPost(r.cfg.Source.Channel, m.ID, postID)
+		} else {
+			r.store.Mark(r.cfg.Source.Channel, m.ID)
+		}
 		processed++
 		r.log.Info("published",
 			"id", m.ID,
+			"wp_id", postID,
 			"category", routed.CategoryFa,
 			"title", utils.DisplayTitle(routed.Title, 50))
 	}

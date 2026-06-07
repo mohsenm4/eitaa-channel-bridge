@@ -12,9 +12,12 @@ import (
 
 // Publisher delivers a single routed message. A non-nil Publish error
 // keeps the message un-delivered and triggers a retry on the next tick.
+// Returned postID is the target's post identifier (e.g. WP post ID),
+// or 0 for targets that don't have one or for archive follow-ups that
+// don't create a new post.
 type Publisher interface {
 	Name() string
-	Publish(ctx context.Context, msg router.Routed) error
+	Publish(ctx context.Context, msg router.Routed) (postID int, err error)
 	Close() error
 }
 

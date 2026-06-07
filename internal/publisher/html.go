@@ -47,11 +47,11 @@ func NewHTML(cfg config.HTMLTarget, log *slog.Logger) (*HTML, error) {
 
 func (p *HTML) Name() string { return "html:" + p.cfg.OutputDir }
 
-func (p *HTML) Publish(_ context.Context, msg router.Routed) error {
+func (p *HTML) Publish(_ context.Context, msg router.Routed) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.posts[msg.ID] = msg
-	return p.writePostsJSON()
+	return 0, p.writePostsJSON()
 }
 
 func (p *HTML) Close() error { return nil }

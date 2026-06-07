@@ -30,6 +30,10 @@ type Message struct {
 	Text          string    `json:"text"`
 	TextHTML      string    `json:"text_html,omitempty"`
 	Photos        []string  `json:"photos,omitempty"`
+	// ReplyToID is the source-channel message ID this post replies to,
+	// or 0 if it isn't a reply. Used by #آرشیو follow-ups to attach
+	// extra photos to the right WP post even after a restart.
+	ReplyToID int `json:"reply_to_id,omitempty"`
 }
 
 type Client struct {
@@ -163,6 +167,10 @@ func parseMessage(channel string, root *html.Node, dataPost string) Message {
 			if u := extractBackgroundURL(attr(n, "style")); u != "" {
 				msg.Photos = append(msg.Photos, absURL(u))
 			}
+		case n.Data == "a" && hasClass(n, "etme_widget_message_reply"):
+			if id := parseReplyID(attr(n, "href")); id > 0 {
+				msg.ReplyToID = id
+			}
 		}
 	})
 
@@ -231,6 +239,17 @@ func extractBackgroundURL(style string) string {
 		return ""
 	}
 	return m[1]
+}
+
+// parseReplyID extracts the trailing message ID from a reply href
+// like "/channel/123". Returns 0 if no digits are found.
+func parseReplyID(href string) int {
+	if i := strings.LastIndex(href, "/"); i >= 0 {
+		if id, err := strconv.Atoi(href[i+1:]); err == nil {
+			return id
+		}
+	}
+	return 0
 }
 
 func absURL(u string) string {

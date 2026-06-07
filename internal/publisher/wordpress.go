@@ -26,12 +26,6 @@ type WordPress struct {
 
 	// Lazy-loaded: WP category Name -> ID. Filled on first Publish.
 	catByName map[string]int
-
-	// In-memory: the WP post ID of the most recently published post.
-	// Archive (#آرشیو) follow-ups attach their photos to this post.
-	// Resets to 0 on restart — initial archive messages after restart
-	// log a warning and skip.
-	lastPostID int
 }
 
 func NewWordPress(cfg config.WordPressTarget, log *slog.Logger) *WordPress {
@@ -56,19 +50,19 @@ func (p *WordPress) Name() string { return "wordpress:" + p.cfg.URL }
 
 func (p *WordPress) Close() error { return nil }
 
-func (p *WordPress) Publish(ctx context.Context, msg router.Routed) error {
+func (p *WordPress) Publish(ctx context.Context, msg router.Routed) (int, error) {
 	if msg.IsArchive() {
-		return p.publishArchive(ctx, msg)
+		return 0, p.publishArchive(ctx, msg)
 	}
 	if msg.CategoryFa == "" {
-		return fmt.Errorf("routed message has no category label")
+		return 0, fmt.Errorf("routed message has no category label")
 	}
 	if err := p.loadCategories(ctx); err != nil {
-		return fmt.Errorf("load WP categories: %w", err)
+		return 0, fmt.Errorf("load WP categories: %w", err)
 	}
 	catID, ok := p.catByName[msg.CategoryFa]
 	if !ok {
-		return fmt.Errorf("WP category %q not found on the site — create it or fix the .env label", msg.CategoryFa)
+		return 0, fmt.Errorf("WP category %q not found on the site — create it or fix the .env label", msg.CategoryFa)
 	}
 
 	// Upload the first photo (if any) as the featured image. A failure
@@ -98,7 +92,7 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) error {
 
 	resp, err := p.do(ctx, http.MethodPost, "/wp-json/wp/v2/posts", body)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	var out struct {
@@ -106,10 +100,8 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) error {
 		Link string `json:"link"`
 	}
 	if err := json.Unmarshal(resp, &out); err != nil {
-		return fmt.Errorf("decode WP post response: %w (body: %s)", err, snippet(resp))
+		return 0, fmt.Errorf("decode WP post response: %w (body: %s)", err, snippet(resp))
 	}
-
-	p.lastPostID = out.ID
 
 	p.log.Info("wordpress: published",
 		"eitaa_id", msg.ID,
@@ -120,24 +112,24 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) error {
 		"featured_media", featuredID,
 		"link", out.Link,
 	)
-	return nil
+	return out.ID, nil
 }
 
 // publishArchive uploads the photos from a #آرشیو follow-up and attaches
-// them to the most recently published post. The post's content is also
-// extended with <img> tags so the gallery shows up in the draft preview
-// without admin intervention.
+// them to msg.ParentPostID (resolved by the runner from the reply chain
+// via state). The post's content is extended with <img> tags so the
+// gallery shows up in the draft preview without admin intervention.
 func (p *WordPress) publishArchive(ctx context.Context, msg router.Routed) error {
-	if p.lastPostID == 0 {
-		return fmt.Errorf("archive message %d arrived with no preceding post in this session — skipping", msg.ID)
+	if msg.ParentPostID == 0 {
+		return fmt.Errorf("archive message %d has no parent post in state — was it sent as a reply to a published post?", msg.ID)
 	}
 	if len(msg.Photos) == 0 {
 		p.log.Info("wordpress: archive message has no photos — nothing to attach",
-			"eitaa_id", msg.ID, "wp_post", p.lastPostID)
+			"eitaa_id", msg.ID, "wp_post", msg.ParentPostID)
 		return nil
 	}
 
-	parentID := p.lastPostID
+	parentID := msg.ParentPostID
 	var imgTags []string
 	var uploaded []int
 	for i, photo := range msg.Photos {

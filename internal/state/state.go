@@ -1,4 +1,6 @@
-// Package state persists processed message IDs per channel.
+// Package state persists processed message IDs per channel, along with
+// the target post ID each one produced (0 if the message was skipped or
+// the target doesn't expose post IDs).
 package state
 
 import (
@@ -13,12 +15,15 @@ import (
 
 type Store struct {
 	path string
-	data map[string]map[int]bool
+	// channel → eitaa message ID → target post ID (0 = seen but no post)
+	data map[string]map[int]int
 }
 
 // Load reads the store; a missing file is treated as empty.
+// Accepts both the new map format and the legacy []int format so old
+// seen.json files keep working.
 func Load(path string) (*Store, error) {
-	s := &Store{path: path, data: map[string]map[int]bool{}}
+	s := &Store{path: path, data: map[string]map[int]int{}}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -29,33 +34,69 @@ func Load(path string) (*Store, error) {
 	if len(b) == 0 {
 		return s, nil
 	}
-	raw := map[string][]int{}
-	if err := json.Unmarshal(b, &raw); err != nil {
+	// Try new format: {"channel": {"123": 4567, "124": 0}}.
+	rawMap := map[string]map[int]int{}
+	if err := json.Unmarshal(b, &rawMap); err == nil {
+		for ch, m := range rawMap {
+			s.data[ch] = m
+		}
+		return s, nil
+	}
+	// Fall back to legacy format: {"channel": [1, 2, 3]}.
+	rawList := map[string][]int{}
+	if err := json.Unmarshal(b, &rawList); err != nil {
 		return nil, fmt.Errorf("parse state: %w", err)
 	}
-	for ch, ids := range raw {
-		set := make(map[int]bool, len(ids))
+	for ch, ids := range rawList {
+		m := make(map[int]int, len(ids))
 		for _, id := range ids {
-			set[id] = true
+			m[id] = 0
 		}
-		s.data[ch] = set
+		s.data[ch] = m
 	}
 	return s, nil
 }
 
 func (s *Store) Seen(channel string, id int) bool {
-	return s.data[channel] != nil && s.data[channel][id]
+	if s.data[channel] == nil {
+		return false
+	}
+	_, ok := s.data[channel][id]
+	return ok
 }
 
 func (s *Store) Count(channel string) int {
 	return len(s.data[channel])
 }
 
+// Mark records a message as seen with no associated post ID.
+// Use for skipped messages or targets that don't have a post ID.
 func (s *Store) Mark(channel string, id int) {
 	if s.data[channel] == nil {
-		s.data[channel] = map[int]bool{}
+		s.data[channel] = map[int]int{}
 	}
-	s.data[channel][id] = true
+	if _, ok := s.data[channel][id]; !ok {
+		s.data[channel][id] = 0
+	}
+}
+
+// MarkWithPost records a message as seen and remembers the WP post ID
+// it produced. Lets #آرشیو follow-ups find the right post via reply
+// chain even after a restart.
+func (s *Store) MarkWithPost(channel string, eitaaID, postID int) {
+	if s.data[channel] == nil {
+		s.data[channel] = map[int]int{}
+	}
+	s.data[channel][eitaaID] = postID
+}
+
+// PostID returns the target post ID for an eitaa message, or 0 if the
+// message wasn't seen or didn't produce a post.
+func (s *Store) PostID(channel string, eitaaID int) int {
+	if s.data[channel] == nil {
+		return 0
+	}
+	return s.data[channel][eitaaID]
 }
 
 // Save writes the store atomically (write-then-rename).
@@ -63,14 +104,19 @@ func (s *Store) Save() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
-	out := map[string][]int{}
-	for ch, set := range s.data {
-		ids := make([]int, 0, len(set))
-		for id := range set {
+	// Marshal with deterministic key order so diffs stay small.
+	out := map[string]map[string]int{}
+	for ch, m := range s.data {
+		ids := make([]int, 0, len(m))
+		for id := range m {
 			ids = append(ids, id)
 		}
 		sort.Ints(ids)
-		out[ch] = ids
+		inner := make(map[string]int, len(ids))
+		for _, id := range ids {
+			inner[fmt.Sprintf("%d", id)] = m[id]
+		}
+		out[ch] = inner
 	}
 	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
