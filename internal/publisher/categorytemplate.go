@@ -45,7 +45,7 @@ func extractCategoryVars(msg router.Routed, featuredID int) map[string]string {
 	switch msg.Category {
 	case "qarz-al-hasaneh":
 		return parseQarzReport(msg, featuredID)
-	case "tavanmandsazi":
+	case "tavanmandsazi", "rezvan":
 		return parseSimpleReport(msg, featuredID)
 	}
 	return nil

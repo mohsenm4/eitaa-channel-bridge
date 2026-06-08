@@ -202,3 +202,29 @@ func TestExtractCategoryVars_TavanmandsaziUsesSimpleParser(t *testing.T) {
 		t.Error("tavanmandsazi should NOT have LOAN_COUNT (that's qarz-specific)")
 	}
 }
+
+func TestRezvan_RoutesToSimpleTemplateAndParser(t *testing.T) {
+	msg := tavanmandRouted()
+	msg.Category = "rezvan"
+	msg.CategoryFa = "رضوان"
+
+	if _, ok := loadCategoryTemplate("rezvan"); !ok {
+		t.Fatal("rezvan.tmpl not embedded")
+	}
+	vars := extractCategoryVars(msg, 777)
+	if vars == nil {
+		t.Fatal("expected non-nil vars for rezvan")
+	}
+	if vars["TITLE"] == "" || vars["BODY"] == "" || vars["EVENT_DATE"] == "" {
+		t.Errorf("simple parser fields missing: %#v", vars)
+	}
+
+	tmpl, _ := loadCategoryTemplate("rezvan")
+	out := renderCategoryTemplate(tmpl, vars)
+	if strings.Contains(out, "{{") {
+		t.Errorf("unfilled placeholder remains:\n%s", out)
+	}
+	if !strings.Contains(out, "📅 تاریخ برگزاری: 1404/08/15") {
+		t.Errorf("date line missing in rezvan output:\n%s", out)
+	}
+}
