@@ -35,6 +35,8 @@ type Publishing struct {
 	Default       *Category
 	SkipHashtags  []string
 	InboxHashtags []string
+	// DedupeWindow: a message with the same text whose timestamp is within this window of an already-published one is treated as an Eitaa double-send and skipped. Zero disables.
+	DedupeWindow time.Duration
 }
 
 type Category struct {
@@ -115,6 +117,11 @@ func Load(envPath string) (*Config, error) {
 	cfg.Publishing.Default = def
 	cfg.Publishing.SkipHashtags = parseCommaList(envStr("PUBLISHING_SKIP_HASHTAGS"))
 	cfg.Publishing.InboxHashtags = parseCommaList(envStr("PUBLISHING_INBOX_HASHTAGS"))
+	dw, err := envDuration("PUBLISHING_DEDUPE_WINDOW")
+	if err != nil {
+		return nil, err
+	}
+	cfg.Publishing.DedupeWindow = dw
 
 	cfg.Target.Type = envStr("TARGET_TYPE")
 	cfg.Target.File.Path = envStr("TARGET_FILE_PATH")
@@ -236,6 +243,9 @@ func parseDefaultCategory(s string) (*Category, error) {
 func (c *Config) applyDefaults() {
 	if c.Source.PollInterval == 0 {
 		c.Source.PollInterval = 5 * time.Minute
+	}
+	if c.Publishing.DedupeWindow == 0 {
+		c.Publishing.DedupeWindow = 10 * time.Second
 	}
 	if c.Storage.SeenFile == "" {
 		c.Storage.SeenFile = filepath.Join("data", "seen.json")

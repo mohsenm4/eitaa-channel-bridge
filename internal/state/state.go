@@ -1,4 +1,4 @@
-// Package state persists processed message IDs per channel and their resulting target post IDs.
+// Package state persists processed message IDs per channel with the post ID, text fingerprint, and time.
 package state
 
 import (
@@ -9,17 +9,25 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"time"
 )
+
+// Entry records what we did with one Eitaa message and how to recognise its duplicates / edits later.
+type Entry struct {
+	PostID int    `json:"post,omitempty"` // 0 = seen but no post (skipped, inbox, or pre-fingerprint)
+	FP     string `json:"fp,omitempty"`   // sha256(text)[:16]; empty for legacy / inbox / skip entries
+	TS     int64  `json:"ts,omitempty"`   // msg.Date.Unix(); 0 means "no time on record"
+}
 
 type Store struct {
 	path string
-	// channel → eitaa message ID → target post ID (0 = seen but no post)
-	data map[string]map[int]int
+	data map[string]map[int]Entry // channel → eitaa id → entry
 }
 
-// Load reads the store (missing file = empty); accepts both the map and the legacy []int formats.
+// Load reads the store (missing file = empty); accepts the new {post,fp,ts} format and two older shapes.
 func Load(path string) (*Store, error) {
-	s := &Store{path: path, data: map[string]map[int]int{}}
+	s := &Store{path: path, data: map[string]map[int]Entry{}}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -30,33 +38,50 @@ func Load(path string) (*Store, error) {
 	if len(b) == 0 {
 		return s, nil
 	}
-	// Try new format: {"channel": {"123": 4567, "124": 0}}.
-	rawMap := map[string]map[int]int{}
-	if err := json.Unmarshal(b, &rawMap); err == nil {
-		for ch, m := range rawMap {
-			s.data[ch] = m
-		}
-		return s, nil
-	}
-	// Fall back to legacy format: {"channel": [1, 2, 3]}.
-	rawList := map[string][]int{}
-	if err := json.Unmarshal(b, &rawList); err != nil {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(b, &top); err != nil {
 		return nil, fmt.Errorf("parse state: %w", err)
 	}
-	for ch, ids := range rawList {
-		m := make(map[int]int, len(ids))
-		for _, id := range ids {
-			m[id] = 0
-		}
-		s.data[ch] = m
+	for ch, innerRaw := range top {
+		s.data[ch] = parseChannel(innerRaw)
 	}
 	return s, nil
 }
 
-func (s *Store) Seen(channel string, id int) bool {
-	if s.data[channel] == nil {
-		return false
+// parseChannel decodes one channel's slice (legacy []int) or map (any-version) shape.
+func parseChannel(raw json.RawMessage) map[int]Entry {
+	var ids []int
+	if err := json.Unmarshal(raw, &ids); err == nil {
+		m := make(map[int]Entry, len(ids))
+		for _, id := range ids {
+			m[id] = Entry{}
+		}
+		return m
 	}
+	var inner map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &inner); err != nil {
+		return map[int]Entry{}
+	}
+	m := make(map[int]Entry, len(inner))
+	for idStr, val := range inner {
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			continue
+		}
+		var e Entry
+		if err := json.Unmarshal(val, &e); err == nil {
+			m[id] = e
+			continue
+		}
+		var postID int
+		if err := json.Unmarshal(val, &postID); err == nil {
+			m[id] = Entry{PostID: postID}
+		}
+	}
+	return m
+}
+
+func (s *Store) Seen(channel string, id int) bool {
 	_, ok := s.data[channel][id]
 	return ok
 }
@@ -65,48 +90,74 @@ func (s *Store) Count(channel string) int {
 	return len(s.data[channel])
 }
 
-// Mark records a message as seen without a post ID (skipped messages or post-less targets).
+// Mark records a message as seen with no metadata (skipped / inbox / post-less targets).
 func (s *Store) Mark(channel string, id int) {
-	if s.data[channel] == nil {
-		s.data[channel] = map[int]int{}
-	}
+	s.ensure(channel)
 	if _, ok := s.data[channel][id]; !ok {
-		s.data[channel][id] = 0
+		s.data[channel][id] = Entry{}
 	}
 }
 
-// MarkWithPost records a message as seen and remembers the post ID it produced (used by #آرشیو reply chains).
+// MarkWithPost records seen + the post ID, no fingerprint (kept for backward compat).
 func (s *Store) MarkWithPost(channel string, eitaaID, postID int) {
-	if s.data[channel] == nil {
-		s.data[channel] = map[int]int{}
-	}
-	s.data[channel][eitaaID] = postID
+	s.ensure(channel)
+	s.data[channel][eitaaID] = Entry{PostID: postID}
 }
 
-// PostID returns the post ID an eitaa message produced, or 0 if unseen or post-less.
+// MarkPublished records seen + post ID + fingerprint + msg time, the richest form (used for dedupe / edit detection).
+func (s *Store) MarkPublished(channel string, eitaaID, postID int, fp string, t time.Time) {
+	s.ensure(channel)
+	s.data[channel][eitaaID] = Entry{PostID: postID, FP: fp, TS: t.Unix()}
+}
+
+// PostID returns the post ID a message produced, or 0 if unseen / post-less.
 func (s *Store) PostID(channel string, eitaaID int) int {
-	if s.data[channel] == nil {
-		return 0
-	}
-	return s.data[channel][eitaaID]
+	return s.data[channel][eitaaID].PostID
 }
 
-// Save writes the store atomically (write-then-rename).
+// FindRecentDuplicate scans channel for a prior entry with the same fp whose ts is within window of msgTime.
+// Returns the original eitaa id + post id if found. Empty fp or zero window short-circuits to "not found".
+func (s *Store) FindRecentDuplicate(channel, fp string, msgTime time.Time, window time.Duration) (eitaaID, postID int, ok bool) {
+	if fp == "" || window <= 0 {
+		return 0, 0, false
+	}
+	msgTS := msgTime.Unix()
+	for id, e := range s.data[channel] {
+		if e.FP != fp || e.TS == 0 {
+			continue
+		}
+		diff := msgTS - e.TS
+		if diff < 0 {
+			diff = -diff
+		}
+		if time.Duration(diff)*time.Second <= window {
+			return id, e.PostID, true
+		}
+	}
+	return 0, 0, false
+}
+
+func (s *Store) ensure(channel string) {
+	if s.data[channel] == nil {
+		s.data[channel] = map[int]Entry{}
+	}
+}
+
+// Save writes the new {post,fp,ts} format atomically; key order is deterministic for small diffs.
 func (s *Store) Save() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
-	// Marshal with deterministic key order so diffs stay small.
-	out := map[string]map[string]int{}
+	out := map[string]map[string]Entry{}
 	for ch, m := range s.data {
 		ids := make([]int, 0, len(m))
 		for id := range m {
 			ids = append(ids, id)
 		}
 		sort.Ints(ids)
-		inner := make(map[string]int, len(ids))
+		inner := make(map[string]Entry, len(ids))
 		for _, id := range ids {
-			inner[fmt.Sprintf("%d", id)] = m[id]
+			inner[strconv.Itoa(id)] = m[id]
 		}
 		out[ch] = inner
 	}

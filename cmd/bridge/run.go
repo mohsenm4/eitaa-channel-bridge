@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"log/slog"
 	"os"
@@ -89,6 +91,17 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 		return true
 	}
 
+	fp := fingerprint(m.Text)
+	if origID, origPost, dup := r.store.FindRecentDuplicate(
+		r.cfg.Source.Channel, fp, m.Date, r.cfg.Publishing.DedupeWindow,
+	); dup {
+		r.log.Info("dedupe",
+			"id", m.ID, "duplicate_of", origID, "wp_post", origPost,
+			"msg", "Eitaa double-send — same text within window, not republishing")
+		r.store.Mark(r.cfg.Source.Channel, m.ID)
+		return true
+	}
+
 	postID, err := r.pub.Publish(ctx, routed)
 	if err != nil {
 		r.log.Error("publish failed", "id", m.ID, "err", err)
@@ -103,16 +116,18 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 	if aerr := jsonio.Append(r.cfg.Storage.ArchiveFile, m); aerr != nil {
 		r.log.Warn("archive failed", "id", m.ID, "err", aerr)
 	}
-	if postID > 0 {
-		r.store.MarkWithPost(r.cfg.Source.Channel, m.ID, postID)
-	} else {
-		r.store.Mark(r.cfg.Source.Channel, m.ID)
-	}
+	r.store.MarkPublished(r.cfg.Source.Channel, m.ID, postID, fp, m.Date)
 	r.log.Info("published",
 		"id", m.ID, "wp_id", postID,
 		"category", routed.CategoryFa,
 		"title", utils.DisplayTitle(routed.Title, 50))
 	return true
+}
+
+// fingerprint hashes the message text so duplicate detection ignores Eitaa ID variance.
+func fingerprint(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:8])
 }
 
 func (r *runner) tick(ctx context.Context) {
