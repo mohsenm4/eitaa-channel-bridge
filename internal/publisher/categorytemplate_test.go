@@ -175,25 +175,6 @@ func TestJalasatVahedha_RoutesToSimpleTemplateAndParser(t *testing.T) {
 	}
 }
 
-func TestHadith_RoutesToSimpleTemplateAndParser(t *testing.T) {
-	msg := tavanmandRouted()
-	msg.Category = "hadith"
-	msg.CategoryFa = "حدیث"
-
-	if _, ok := loadCategoryTemplate("hadith"); !ok {
-		t.Fatal("hadith.tmpl not embedded")
-	}
-	vars := extractCategoryVars(msg, 333)
-	if vars == nil {
-		t.Fatal("expected non-nil vars for hadith")
-	}
-	tmpl, _ := loadCategoryTemplate("hadith")
-	out := renderCategoryTemplate(tmpl, vars)
-	if strings.Contains(out, "{{") {
-		t.Errorf("unfilled placeholder remains:\n%s", out)
-	}
-}
-
 func TestQarzAlHasaneh_RoutesToSimpleTemplateAndParser(t *testing.T) {
 	msg := tavanmandRouted()
 	msg.Category = "qarz-al-hasaneh"

@@ -42,7 +42,7 @@ func renderCategoryTemplate(tmpl string, vars map[string]string) string {
 func extractCategoryVars(msg router.Routed, featuredID int) map[string]string {
 	switch msg.Category {
 	case "qarz-al-hasaneh", "tavanmandsazi", "rezvan",
-		"hemayat-khedmat", "jalasat-vahedha", "hadith":
+		"hemayat-khedmat", "jalasat-vahedha":
 		return parseSimpleReport(msg, featuredID)
 	}
 	return nil
