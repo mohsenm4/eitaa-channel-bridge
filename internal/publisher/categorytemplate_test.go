@@ -8,103 +8,8 @@ import (
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/router"
 )
 
-const qarzSampleMsg = `📌 گزارش قرض الحسنه - تابستان 1404
-
-📅 1404/06/31
-
-📝
-
-تابستان 1404 – گزارش ماهانه واحد قرض الحسنه از تاریخ 1404/04/01 تا 1404/06/31
-
-تعداد وام های تایید شده: 15
-مبلغ کل وام های اعطایی: 2,800,000,000 ریال
-
-موضوعات و تعداد وام های اعطایی:
-- رهن منزل: 4
-- معوقات: 5
-- درمان: 3
-- تحصیل: 3
-
-مجموع مبلغ وام های اعطایی به رقم 2,800,000,000 ریال می رسد. این رقم در قالب 15 وام به خانواده های مضطر و نیازمند پرداخت شد.
-
-#قرض_الحسنه`
-
-func qarzRouted() router.Routed {
-	return router.Routed{
-		Message:    eitaa.Message{Text: qarzSampleMsg},
-		Category:   "qarz-al-hasaneh",
-		CategoryFa: "واحد قرض الحسنه",
-		Title:      "گزارش قرض الحسنه - تابستان 1404",
-		EventDate:  "1404/06/31",
-		Hashtags:   []string{"قرض_الحسنه"},
-	}
-}
-
-func TestParseQarzReport_ExtractsAllFields(t *testing.T) {
-	vars := parseQarzReport(qarzRouted(), 99999)
-	checks := map[string]string{
-		"FEATURED_ID":  "99999",
-		"EVENT_DATE":   "1404/06/31",
-		"LOAN_COUNT":   "15",
-		"TOTAL_AMOUNT": "2,800,000,000",
-	}
-	for k, want := range checks {
-		if got := vars[k]; got != want {
-			t.Errorf("%s = %q, want %q", k, got, want)
-		}
-	}
-	if !strings.Contains(vars["PERIOD_DESCRIPTION"], "تابستان 1404") ||
-		!strings.Contains(vars["PERIOD_DESCRIPTION"], "1404/04/01") {
-		t.Errorf("PERIOD_DESCRIPTION = %q, missing تابستان/date range", vars["PERIOD_DESCRIPTION"])
-	}
-	if !strings.Contains(vars["SUMMARY"], "مجموع مبلغ") ||
-		!strings.Contains(vars["SUMMARY"], "2,800,000,000") {
-		t.Errorf("SUMMARY = %q, missing مجموع/total", vars["SUMMARY"])
-	}
-	for _, want := range []string{
-		"رهن منزل: <strong>4</strong>",
-		"معوقات: <strong>5</strong>",
-		"درمان: <strong>3</strong>",
-		"تحصیل: <strong>3</strong>",
-	} {
-		if !strings.Contains(vars["BREAKDOWN_LIST"], want) {
-			t.Errorf("BREAKDOWN_LIST missing %q\ngot:\n%s", want, vars["BREAKDOWN_LIST"])
-		}
-	}
-}
-
-func TestRenderCategoryTemplate_QarzEndToEnd(t *testing.T) {
-	tmpl, ok := loadCategoryTemplate("qarz-al-hasaneh")
-	if !ok {
-		t.Fatal("qarz-al-hasaneh.tmpl not embedded")
-	}
-	vars := parseQarzReport(qarzRouted(), 42)
-	out := renderCategoryTemplate(tmpl, vars)
-
-	for _, want := range []string{
-		`image="42"`,
-		"قال امیر المومنین علی علیه السلام",
-		"تعداد وام‌های تایید شده: <strong>15</strong>",
-		"مبلغ کل وام‌های اعطایی: <strong>2,800,000,000</strong> ریال",
-		"رهن منزل: <strong>4</strong>",
-		"معوقات: <strong>5</strong>",
-		"📅 1404/06/31",
-		"مجموع مبلغ وام های اعطایی",
-		"[vc_row][vc_column]",
-		"[/vc_column][/vc_row]",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q\n--- full output ---\n%s", want, out)
-		}
-	}
-	// No leftover placeholders.
-	if strings.Contains(out, "{{") {
-		t.Errorf("unfilled placeholder remains:\n%s", out)
-	}
-}
-
 func TestExtractCategoryVars_UnknownSlugReturnsNil(t *testing.T) {
-	msg := qarzRouted()
+	msg := tavanmandRouted()
 	msg.Category = "hemayat-khedmat"
 	if vars := extractCategoryVars(msg, 0); vars != nil {
 		t.Errorf("expected nil for category without parser, got %v", vars)
@@ -198,9 +103,6 @@ func TestExtractCategoryVars_TavanmandsaziUsesSimpleParser(t *testing.T) {
 	if _, ok := vars["BODY"]; !ok {
 		t.Error("tavanmandsazi should have BODY (uses parseSimpleReport)")
 	}
-	if _, ok := vars["LOAN_COUNT"]; ok {
-		t.Error("tavanmandsazi should NOT have LOAN_COUNT (that's qarz-specific)")
-	}
 }
 
 func TestRezvan_RoutesToSimpleTemplateAndParser(t *testing.T) {
@@ -226,5 +128,34 @@ func TestRezvan_RoutesToSimpleTemplateAndParser(t *testing.T) {
 	}
 	if !strings.Contains(out, "📅 تاریخ برگزاری: 1404/08/15") {
 		t.Errorf("date line missing in rezvan output:\n%s", out)
+	}
+}
+
+func TestQarzAlHasaneh_RoutesToSimpleTemplateAndParser(t *testing.T) {
+	msg := tavanmandRouted()
+	msg.Category = "qarz-al-hasaneh"
+	msg.CategoryFa = "واحد قرض الحسنه"
+
+	if _, ok := loadCategoryTemplate("qarz-al-hasaneh"); !ok {
+		t.Fatal("qarz-al-hasaneh.tmpl not embedded")
+	}
+	vars := extractCategoryVars(msg, 888)
+	if vars == nil {
+		t.Fatal("expected non-nil vars for qarz-al-hasaneh")
+	}
+	if vars["TITLE"] == "" || vars["BODY"] == "" || vars["EVENT_DATE"] == "" {
+		t.Errorf("simple parser fields missing: %#v", vars)
+	}
+
+	tmpl, _ := loadCategoryTemplate("qarz-al-hasaneh")
+	out := renderCategoryTemplate(tmpl, vars)
+	if strings.Contains(out, "{{") {
+		t.Errorf("unfilled placeholder remains:\n%s", out)
+	}
+	if !strings.Contains(out, "📅 تاریخ برگزاری: 1404/08/15") {
+		t.Errorf("date line missing in qarz output:\n%s", out)
+	}
+	if strings.Contains(out, "vc_single_image") {
+		t.Errorf("vc_single_image should not appear in simple qarz template:\n%s", out)
 	}
 }

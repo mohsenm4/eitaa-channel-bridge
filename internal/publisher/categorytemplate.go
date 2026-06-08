@@ -2,8 +2,6 @@ package publisher
 
 import (
 	"embed"
-	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/router"
@@ -43,9 +41,7 @@ func renderCategoryTemplate(tmpl string, vars map[string]string) string {
 // "no parser for this category — let the caller fall back".
 func extractCategoryVars(msg router.Routed, featuredID int) map[string]string {
 	switch msg.Category {
-	case "qarz-al-hasaneh":
-		return parseQarzReport(msg, featuredID)
-	case "tavanmandsazi", "rezvan":
+	case "qarz-al-hasaneh", "tavanmandsazi", "rezvan":
 		return parseSimpleReport(msg, featuredID)
 	}
 	return nil
@@ -63,46 +59,6 @@ func parseSimpleReport(msg router.Routed, _ int) map[string]string {
 		"EVENT_DATE": msg.EventDate,
 		"BODY":       body,
 	}
-}
-
-// --- per-category parsers ---
-
-var (
-	qarzPeriodRe    = regexp.MustCompile(`(?m)^(.+?از تاریخ\s*\S+\s*تا\s*\S+)\s*$`)
-	qarzLoanCountRe = regexp.MustCompile(`تعداد وام\s*های تایید شده[:：\s]*([0-9۰-۹,٬]+)`)
-	qarzTotalRe     = regexp.MustCompile(`مبلغ کل وام\s*های اعطایی[:：\s]*([0-9۰-۹,٬]+)`)
-	qarzBreakdownRe = regexp.MustCompile(`(?m)^[-–•]\s*(.+?)[:：]\s*([0-9۰-۹,٬]+)\s*$`)
-	qarzSummaryRe   = regexp.MustCompile(`(?m)^(مجموع مبلغ.+)$`)
-)
-
-func parseQarzReport(msg router.Routed, featuredID int) map[string]string {
-	body := stripMarkersAndHashtags(msg.Text)
-	vars := map[string]string{
-		"FEATURED_ID":        fmt.Sprintf("%d", featuredID),
-		"EVENT_DATE":         msg.EventDate,
-		"PERIOD_DESCRIPTION": firstSubmatch(qarzPeriodRe, body),
-		"LOAN_COUNT":         firstSubmatch(qarzLoanCountRe, body),
-		"TOTAL_AMOUNT":       firstSubmatch(qarzTotalRe, body),
-		"SUMMARY":            firstSubmatch(qarzSummaryRe, body),
-		"BREAKDOWN_LIST":     renderBreakdown(qarzBreakdownRe.FindAllStringSubmatch(body, -1)),
-	}
-	return vars
-}
-
-func renderBreakdown(matches [][]string) string {
-	var b strings.Builder
-	for _, m := range matches {
-		fmt.Fprintf(&b, "– %s: <strong>%s</strong>\n", strings.TrimSpace(m[1]), strings.TrimSpace(m[2]))
-	}
-	return strings.TrimRight(b.String(), "\n")
-}
-
-func firstSubmatch(re *regexp.Regexp, s string) string {
-	m := re.FindStringSubmatch(s)
-	if len(m) < 2 {
-		return ""
-	}
-	return strings.TrimSpace(m[1])
 }
 
 // stripMarkersAndHashtags removes lines that start with a router marker
