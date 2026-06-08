@@ -61,6 +61,19 @@ func (r *runner) processBatch(ctx context.Context, msgs []eitaa.Message) int {
 			continue
 		}
 		routed := r.rt.Route(m)
+		if tag := matchInboxHashtag(r.cfg.Publishing.InboxHashtags, routed.Hashtags); tag != "" {
+			inboxPath := inboxFilePath(r.cfg.Storage.ArchiveFile)
+			if err := appendInbox(inboxPath, m, tag); err != nil {
+				r.log.Warn("inbox write failed — will retry next tick",
+					"id", m.ID, "hashtag", tag, "err", err)
+				continue
+			}
+			r.log.Info("inbox", "id", m.ID, "hashtag", tag, "link", m.Link, "file", inboxPath,
+				"msg", "needs manual review — copy text into the homepage slider")
+			r.store.Mark(r.cfg.Source.Channel, m.ID)
+			processed++
+			continue
+		}
 		ok, reason := publisher.ShouldPublish(r.cfg.Publishing, routed)
 		if !ok {
 			r.log.Info("skipped", "id", m.ID, "reason", reason)
@@ -206,6 +219,57 @@ func categoryTags(cats []config.Category) []string {
 		out[i] = c.Hashtag
 	}
 	return out
+}
+
+// matchInboxHashtag returns the first message hashtag that appears in
+// the operator's inbox list, or "" if none does. Used to route messages
+// that need a human to look at them (e.g. #حدیث, where the homepage
+// slider is hand-curated) instead of being auto-published.
+func matchInboxHashtag(inbox, msgTags []string) string {
+	if len(inbox) == 0 || len(msgTags) == 0 {
+		return ""
+	}
+	set := make(map[string]bool, len(inbox))
+	for _, t := range inbox {
+		set[t] = true
+	}
+	for _, t := range msgTags {
+		if set[t] {
+			return t
+		}
+	}
+	return ""
+}
+
+// inboxFilePath puts inbox.log next to the archive (typically data/).
+func inboxFilePath(archiveFile string) string {
+	return filepath.Join(filepath.Dir(archiveFile), "inbox.log")
+}
+
+// appendInbox writes one fully self-contained block per pending message:
+// timestamp + hashtag + eitaa link + full body. Format chosen to be
+// scannable with `cat`/`tail` — the operator opens the file, copies the
+// text into the homepage slider manually, optionally trims handled
+// entries from the top.
+func appendInbox(path string, m eitaa.Message, hashtag string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = fmt.Fprintf(f,
+		"────────────────────────────────────────\n"+
+			"received: %s\n"+
+			"hashtag:  #%s\n"+
+			"eitaa:    %s\n"+
+			"────────────────────────────────────────\n"+
+			"%s\n\n",
+		time.Now().Format("2006-01-02 15:04:05"),
+		hashtag, m.Link, strings.TrimSpace(m.Text))
+	return err
 }
 
 // appendWarning writes one human-readable line per problematic message

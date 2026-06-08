@@ -31,9 +31,10 @@ type Source struct {
 }
 
 type Publishing struct {
-	Categories   []Category
-	Default      *Category
-	SkipHashtags []string
+	Categories    []Category
+	Default       *Category
+	SkipHashtags  []string
+	InboxHashtags []string
 }
 
 type Category struct {
@@ -113,6 +114,7 @@ func Load(envPath string) (*Config, error) {
 	}
 	cfg.Publishing.Default = def
 	cfg.Publishing.SkipHashtags = parseCommaList(envStr("PUBLISHING_SKIP_HASHTAGS"))
+	cfg.Publishing.InboxHashtags = parseCommaList(envStr("PUBLISHING_INBOX_HASHTAGS"))
 
 	cfg.Target.Type = envStr("TARGET_TYPE")
 	cfg.Target.File.Path = envStr("TARGET_FILE_PATH")
