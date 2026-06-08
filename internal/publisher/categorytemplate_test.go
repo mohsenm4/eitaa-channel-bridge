@@ -10,7 +10,7 @@ import (
 
 func TestExtractCategoryVars_UnknownSlugReturnsNil(t *testing.T) {
 	msg := tavanmandRouted()
-	msg.Category = "hemayat-khedmat"
+	msg.Category = "no-such-category"
 	if vars := extractCategoryVars(msg, 0); vars != nil {
 		t.Errorf("expected nil for category without parser, got %v", vars)
 	}
@@ -128,6 +128,50 @@ func TestRezvan_RoutesToSimpleTemplateAndParser(t *testing.T) {
 	}
 	if !strings.Contains(out, "📅 تاریخ برگزاری: 1404/08/15") {
 		t.Errorf("date line missing in rezvan output:\n%s", out)
+	}
+}
+
+func TestHemayatKhedmat_RoutesToSimpleTemplateAndParser(t *testing.T) {
+	msg := tavanmandRouted()
+	msg.Category = "hemayat-khedmat"
+	msg.CategoryFa = "حمایت و خدمت"
+
+	if _, ok := loadCategoryTemplate("hemayat-khedmat"); !ok {
+		t.Fatal("hemayat-khedmat.tmpl not embedded")
+	}
+	vars := extractCategoryVars(msg, 111)
+	if vars == nil {
+		t.Fatal("expected non-nil vars for hemayat-khedmat")
+	}
+	tmpl, _ := loadCategoryTemplate("hemayat-khedmat")
+	out := renderCategoryTemplate(tmpl, vars)
+	if strings.Contains(out, "{{") {
+		t.Errorf("unfilled placeholder remains:\n%s", out)
+	}
+	if !strings.Contains(out, "📅 تاریخ برگزاری: 1404/08/15") {
+		t.Errorf("date line missing:\n%s", out)
+	}
+}
+
+func TestJalasatVahedha_RoutesToSimpleTemplateAndParser(t *testing.T) {
+	msg := tavanmandRouted()
+	msg.Category = "jalasat-vahedha"
+	msg.CategoryFa = "گزارش جلسات واحدها"
+
+	if _, ok := loadCategoryTemplate("jalasat-vahedha"); !ok {
+		t.Fatal("jalasat-vahedha.tmpl not embedded")
+	}
+	vars := extractCategoryVars(msg, 222)
+	if vars == nil {
+		t.Fatal("expected non-nil vars for jalasat-vahedha")
+	}
+	tmpl, _ := loadCategoryTemplate("jalasat-vahedha")
+	out := renderCategoryTemplate(tmpl, vars)
+	if strings.Contains(out, "{{") {
+		t.Errorf("unfilled placeholder remains:\n%s", out)
+	}
+	if !strings.Contains(out, "📅 تاریخ برگزاری: 1404/08/15") {
+		t.Errorf("date line missing:\n%s", out)
 	}
 }
 

@@ -41,7 +41,8 @@ func renderCategoryTemplate(tmpl string, vars map[string]string) string {
 // "no parser for this category — let the caller fall back".
 func extractCategoryVars(msg router.Routed, featuredID int) map[string]string {
 	switch msg.Category {
-	case "qarz-al-hasaneh", "tavanmandsazi", "rezvan":
+	case "qarz-al-hasaneh", "tavanmandsazi", "rezvan",
+		"hemayat-khedmat", "jalasat-vahedha":
 		return parseSimpleReport(msg, featuredID)
 	}
 	return nil
