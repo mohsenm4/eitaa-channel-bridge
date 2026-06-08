@@ -95,18 +95,19 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) (int, error)
 	if len(extraGalleryIDs) > 0 {
 		content = mergeOrInsertGallery(content, extraGalleryIDs)
 	}
+	slug := buildPostSlug(msg)
 
 	// Preferred path: ask the eitaa-bridge-helper plugin to clone the
 	// source post (so all its post_meta — WPBakery state, theme layout —
 	// comes along), then override the visible fields. Falls back to a
 	// plain REST insert if the helper isn't installed.
 	if sourceID > 0 && p.useHelper(ctx) {
-		newID, link, err := p.cloneViaHelper(ctx, sourceID, msg.Title, content, catID, featuredID)
+		newID, link, err := p.cloneViaHelper(ctx, sourceID, msg.Title, content, catID, featuredID, slug)
 		if err == nil {
 			p.log.Info("wordpress: published via clone-post helper",
 				"eitaa_id", msg.ID, "wp_id", newID, "source_id", sourceID,
 				"status", p.cfg.Status, "category", msg.CategoryFa,
-				"title", msg.Title, "featured_media", featuredID, "link", link)
+				"title", msg.Title, "slug", slug, "featured_media", featuredID, "link", link)
 			return newID, nil
 		}
 		// Helper exists but failed for this call — log and fall through.
@@ -119,6 +120,7 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) (int, error)
 		"content":    content,
 		"status":     p.cfg.Status,
 		"categories": []int{catID},
+		"slug":       slug,
 	}
 	if featuredID != 0 {
 		payload["featured_media"] = featuredID
@@ -171,13 +173,14 @@ func (p *WordPress) useHelper(ctx context.Context) bool {
 // cloneViaHelper POSTs to the helper plugin's /clone-post endpoint,
 // which copies all post meta from sourceID and then overrides the
 // visible fields. Returns the new post's id and link.
-func (p *WordPress) cloneViaHelper(ctx context.Context, sourceID int, title, content string, catID, featuredID int) (int, string, error) {
+func (p *WordPress) cloneViaHelper(ctx context.Context, sourceID int, title, content string, catID, featuredID int, slug string) (int, string, error) {
 	payload := map[string]any{
 		"source_id": sourceID,
 		"title":     title,
 		"content":   content,
 		"status":    p.cfg.Status,
 		"category":  catID,
+		"slug":      slug,
 	}
 	if featuredID > 0 {
 		payload["featured_media"] = featuredID
@@ -198,6 +201,24 @@ func (p *WordPress) cloneViaHelper(ctx context.Context, sourceID int, title, con
 		return 0, "", fmt.Errorf("clone-post returned no id (body: %s)", snippet(resp))
 	}
 	return out.ID, out.Link, nil
+}
+
+// buildPostSlug builds a short, ASCII-only WP slug from the routed
+// message: "{category-slug}-{eitaa-id}", e.g. "rezvan-12345". WP would
+// otherwise auto-derive the slug from the Persian title and produce
+// ugly URL-encoded paths like /گزارش-سبدکالا-…/. The category slug is
+// already lowercase ASCII (set by config), and the eitaa id makes the
+// slug unique per source message — so re-running the bridge on the
+// same message keeps the URL stable.
+func buildPostSlug(msg router.Routed) string {
+	cat := strings.ToLower(strings.TrimSpace(msg.Category))
+	if cat == "" {
+		cat = "post"
+	}
+	if msg.ID > 0 {
+		return fmt.Sprintf("%s-%d", cat, msg.ID)
+	}
+	return cat
 }
 
 var vcGalleryRe = regexp.MustCompile(`\[vc_gallery([^\]]*?)images="([^"]*)"([^\]]*?)\]`)
