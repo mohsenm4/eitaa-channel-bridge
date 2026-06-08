@@ -27,3 +27,11 @@ site/
 Thumbs.db
 
 **debug_bin**
+
+# Local-only diagnostic tools (kept on disk, not tracked).
+# bridge is the only cmd entry the running service uses.
+cmd/wpcheck/
+cmd/wpfetch/
+cmd/wppost/
+cmd/wpprobe/
+wp-plugin/
