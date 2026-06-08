@@ -31,8 +31,8 @@ type Message struct {
 	TextHTML      string    `json:"text_html,omitempty"`
 	Photos        []string  `json:"photos,omitempty"`
 	// ReplyToID is the source-channel message ID this post replies to,
-	// or 0 if it isn't a reply. Used by #آرشیو follow-ups to attach
-	// extra photos to the right WP post even after a restart.
+	// or 0 if it isn't a reply. Captured for the archive log; not
+	// consumed by the publisher.
 	ReplyToID int `json:"reply_to_id,omitempty"`
 }
 

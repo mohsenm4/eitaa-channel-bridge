@@ -61,12 +61,6 @@ func (r *runner) processBatch(ctx context.Context, msgs []eitaa.Message) int {
 			continue
 		}
 		routed := r.rt.Route(m)
-		// Resolve parent post for #آرشیو follow-ups via the reply chain:
-		// the message replies to a published post; state remembers what
-		// target post ID that was. Works across restarts.
-		if m.ReplyToID > 0 {
-			routed.ParentPostID = r.store.PostID(r.cfg.Source.Channel, m.ReplyToID)
-		}
 		ok, reason := publisher.ShouldPublish(r.cfg.Publishing, routed)
 		if !ok {
 			r.log.Info("skipped", "id", m.ID, "reason", reason)

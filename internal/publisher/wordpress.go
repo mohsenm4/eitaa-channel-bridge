@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -58,9 +59,6 @@ func (p *WordPress) Name() string { return "wordpress:" + p.cfg.URL }
 func (p *WordPress) Close() error { return nil }
 
 func (p *WordPress) Publish(ctx context.Context, msg router.Routed) (int, error) {
-	if msg.IsArchive() {
-		return 0, p.publishArchive(ctx, msg)
-	}
 	if msg.CategoryFa == "" {
 		return 0, fmt.Errorf("routed message has no category label")
 	}
@@ -72,21 +70,31 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) (int, error)
 		return 0, fmt.Errorf("WP category %q not found on the site — create it or fix the .env label", msg.CategoryFa)
 	}
 
-	// Upload the first photo (if any) as the featured image. A failure
-	// here is non-fatal: better to publish without the image than to
-	// stall the whole message.
+	// Photos[0] → featured image. Photos[1..N] → gallery on the same
+	// post, so an Eitaa media-group (album) flows straight into a
+	// slider without the author having to send a separate #آرشیو
+	// reply. Failures here are non-fatal: better to publish text-only
+	// than to stall the whole message.
 	var featuredID int
-	if len(msg.Photos) > 0 {
-		id, err := p.uploadPhoto(ctx, msg.Photos[0], featuredFilename(msg))
+	var extraGalleryIDs []int
+	for i, photo := range msg.Photos {
+		id, err := p.uploadOrReuse(ctx, photo, msg.ID)
 		if err != nil {
-			p.log.Warn("wordpress: featured image upload failed — publishing without",
-				"eitaa_id", msg.ID, "photo", msg.Photos[0], "err", err)
-		} else {
+			p.log.Warn("wordpress: photo upload failed — continuing without",
+				"eitaa_id", msg.ID, "photo_idx", i, "photo", photo, "err", err)
+			continue
+		}
+		if i == 0 {
 			featuredID = id
+		} else {
+			extraGalleryIDs = append(extraGalleryIDs, id)
 		}
 	}
 
 	sourceID, content := p.renderContent(ctx, msg, catID, featuredID)
+	if len(extraGalleryIDs) > 0 {
+		content = mergeOrInsertGallery(content, extraGalleryIDs)
+	}
 
 	// Preferred path: ask the eitaa-bridge-helper plugin to clone the
 	// source post (so all its post_meta — WPBakery state, theme layout —
@@ -192,109 +200,112 @@ func (p *WordPress) cloneViaHelper(ctx context.Context, sourceID int, title, con
 	return out.ID, out.Link, nil
 }
 
-// publishArchive uploads the photos from a #آرشیو follow-up and attaches
-// them to msg.ParentPostID (resolved by the runner from the reply chain
-// via state). The post's content is extended with <img> tags so the
-// gallery shows up in the draft preview without admin intervention.
-func (p *WordPress) publishArchive(ctx context.Context, msg router.Routed) error {
-	if msg.ParentPostID == 0 {
-		return fmt.Errorf("archive message %d has no parent post in state — was it sent as a reply to a published post?", msg.ID)
-	}
-	if len(msg.Photos) == 0 {
-		p.log.Info("wordpress: archive message has no photos — nothing to attach",
-			"eitaa_id", msg.ID, "wp_post", msg.ParentPostID)
-		return nil
+var vcGalleryRe = regexp.MustCompile(`\[vc_gallery([^\]]*?)images="([^"]*)"([^\]]*?)\]`)
+
+// mergeOrInsertGallery places the new media ids in the post:
+//   - if a [vc_gallery] already exists, the new ids are appended to its
+//     images="…" list (deduped, original order preserved)
+//   - otherwise the gallery is inserted just before the final
+//     [/vc_column][/vc_row] of the body so it sits inside the existing
+//     row (no extra section padding) — matching how the site's
+//     hand-built توانمندسازی posts arrange their gallery
+//   - if neither marker is present (unusual content shape) we fall back
+//     to a standalone row appended at the end
+func mergeOrInsertGallery(content string, newIDs []int) string {
+	gallery := buildVCGalleryInline(newIDs)
+	if gallery == "" {
+		return content
 	}
 
-	parentID := msg.ParentPostID
-	var imgTags []string
-	var uploaded []int
-	for i, photo := range msg.Photos {
-		filename := fmt.Sprintf("eitaa-%s-%d-archive-%d.jpg", msg.Channel, msg.ID, i+1)
-		mediaID, err := p.uploadPhoto(ctx, photo, filename)
-		if err != nil {
-			p.log.Warn("wordpress: archive photo upload failed",
-				"eitaa_id", msg.ID, "photo", photo, "err", err)
-			continue
-		}
-		if err := p.attachMediaToPost(ctx, mediaID, parentID); err != nil {
-			p.log.Warn("wordpress: archive media attach failed",
-				"eitaa_id", msg.ID, "media", mediaID, "post", parentID, "err", err)
-			continue
-		}
-		uploaded = append(uploaded, mediaID)
-		if src := p.mediaSourceURL(ctx, mediaID); src != "" {
-			imgTags = append(imgTags, fmt.Sprintf(`<p><img src=%q alt=""/></p>`, src))
-		}
+	if m := vcGalleryRe.FindStringSubmatchIndex(content); m != nil {
+		existing := content[m[4]:m[5]]
+		merged := mergeIDList(existing, newIDs)
+		return content[:m[4]] + merged + content[m[5]:]
 	}
 
-	if len(imgTags) > 0 {
-		// Wrap the gallery in its own WPBakery row so it sits in the
-		// same grid as the body (and any later galleries) instead of
-		// breaking out into raw HTML.
-		extra := "\n" + wrapVCRow(strings.Join(imgTags, "\n")+"\n")
-		if err := p.appendToPostContent(ctx, parentID, extra); err != nil {
-			p.log.Warn("wordpress: appending archive imgs to post failed",
-				"post", parentID, "err", err)
-		}
+	if idx := strings.LastIndex(content, "[/vc_column][/vc_row]"); idx >= 0 {
+		return content[:idx] + gallery + content[idx:]
 	}
 
-	p.log.Info("wordpress: archive attached",
-		"eitaa_id", msg.ID,
-		"wp_post", parentID,
-		"photos", len(uploaded),
-	)
-	return nil
+	return content + "\n[vc_row][vc_column]" + gallery + "[/vc_column][/vc_row]\n"
 }
 
-func (p *WordPress) attachMediaToPost(ctx context.Context, mediaID, postID int) error {
-	body, _ := json.Marshal(map[string]any{"post": postID})
-	path := fmt.Sprintf("/wp-json/wp/v2/media/%d", mediaID)
-	_, err := p.do(ctx, http.MethodPost, path, body)
-	return err
-}
-
-// mediaSourceURL fetches the public URL of a media item. Falls back to
-// empty string on error — the caller treats that as "skip the img tag"
-// rather than failing the whole archive flow.
-func (p *WordPress) mediaSourceURL(ctx context.Context, mediaID int) string {
-	path := fmt.Sprintf("/wp-json/wp/v2/media/%d", mediaID)
-	body, err := p.do(ctx, http.MethodGet, path, nil)
-	if err != nil {
+// buildVCGalleryInline returns just the [vc_gallery …] shortcode, with
+// no surrounding row/column — caller decides where to splice it.
+func buildVCGalleryInline(mediaIDs []int) string {
+	if len(mediaIDs) == 0 {
 		return ""
 	}
-	var out struct {
-		SourceURL string `json:"source_url"`
+	ids := make([]string, len(mediaIDs))
+	for i, id := range mediaIDs {
+		ids[i] = fmt.Sprintf("%d", id)
 	}
-	if err := json.Unmarshal(body, &out); err != nil {
-		return ""
-	}
-	return out.SourceURL
+	return fmt.Sprintf(
+		`[vc_gallery interval="3" images="%s" img_size="full" onclick=""]`,
+		strings.Join(ids, ","))
 }
 
-// appendToPostContent reads the current post content and PATCHes it
-// with the original content + appended HTML. WP REST has no append
-// primitive so we do read-modify-write; that's fine for drafts.
-func (p *WordPress) appendToPostContent(ctx context.Context, postID int, extra string) error {
-	path := fmt.Sprintf("/wp-json/wp/v2/posts/%d?context=edit", postID)
+// mergeIDList merges newIDs into a comma-separated existing id string,
+// dropping duplicates while preserving original order then appending
+// novel ids in insertion order.
+func mergeIDList(existing string, newIDs []int) string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, id := range strings.Split(existing, ",") {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	for _, id := range newIDs {
+		s := fmt.Sprintf("%d", id)
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return strings.Join(out, ",")
+}
+
+// uploadOrReuse uploads photoURL to the media library, or returns the
+// id of an existing item with the same hash-based filename. fallbackID
+// only matters if the URL has no Eitaa hash (very old scrapes).
+//
+// This is the single point where the bot decides "have we seen this
+// exact photo before?" — used for both the featured image and the
+// gallery photos so the same shot never lands in the library twice.
+func (p *WordPress) uploadOrReuse(ctx context.Context, photoURL string, fallbackID int) (int, error) {
+	filename := photoFilename(photoURL, fallbackID)
+	slug := strings.TrimSuffix(filename, "."+extFromURL(photoURL))
+	if existingID, _ := p.findMediaBySlug(ctx, slug); existingID > 0 {
+		return existingID, nil
+	}
+	return p.uploadPhoto(ctx, photoURL, filename)
+}
+
+// findMediaBySlug returns the id of an existing media library item with
+// the given slug, or 0 if none exists. Slug is derived from the
+// hash-based filename, so a republish or a media-group sent twice
+// hits the existing item instead of creating a duplicate.
+func (p *WordPress) findMediaBySlug(ctx context.Context, slug string) (int, error) {
+	path := fmt.Sprintf("/wp-json/wp/v2/media?slug=%s&per_page=1", url.QueryEscape(slug))
 	body, err := p.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	var current struct {
-		Content struct {
-			Raw string `json:"raw"`
-		} `json:"content"`
+	var items []struct {
+		ID int `json:"id"`
 	}
-	if err := json.Unmarshal(body, &current); err != nil {
-		return fmt.Errorf("decode post: %w", err)
+	if err := json.Unmarshal(body, &items); err != nil {
+		return 0, fmt.Errorf("decode media search: %w", err)
 	}
-
-	updated, _ := json.Marshal(map[string]any{
-		"content": current.Content.Raw + extra,
-	})
-	_, err = p.do(ctx, http.MethodPost, fmt.Sprintf("/wp-json/wp/v2/posts/%d", postID), updated)
-	return err
+	if len(items) == 0 {
+		return 0, nil
+	}
+	return items[0].ID, nil
 }
 
 // uploadPhoto downloads a photo from Eitaa and uploads it to WP's
@@ -367,14 +378,39 @@ func (p *WordPress) uploadMedia(ctx context.Context, data []byte, contentType, f
 	return out.ID, nil
 }
 
-func featuredFilename(msg router.Routed) string {
-	ext := "jpg"
-	if len(msg.Photos) > 0 {
-		if e := extFromURL(msg.Photos[0]); e != "" {
-			ext = e
-		}
+// photoFilename builds a stable filename for a single Eitaa photo, keyed
+// by the photo's content hash that Eitaa puts in the download URL.
+// Same photo across messages → same filename → same media library slug
+// → dedup'd at upload time. This is what makes #آرشیو replays and
+// cross-message photo overlap not produce duplicates in the gallery.
+//
+// fallbackID is used when the URL has no recognisable hash (very old
+// scrapes), so we still produce a unique-enough name.
+func photoFilename(photoURL string, fallbackID int) string {
+	ext := extFromURL(photoURL)
+	if ext == "" {
+		ext = "jpg"
 	}
-	return fmt.Sprintf("eitaa-%s-%d.%s", msg.Channel, msg.ID, ext)
+	if hash := eitaaPhotoHash(photoURL); hash != "" {
+		return fmt.Sprintf("eitaa-photo-%s.%s", hash, ext)
+	}
+	return fmt.Sprintf("eitaa-photo-fallback-%d.%s", fallbackID, ext)
+}
+
+// eitaaPhotoHash pulls the content hash from an Eitaa download URL.
+// Format: https://eitaa.com/download_<hash>?token=… — the token rotates
+// across fetches but the hash stays constant for the same photo.
+func eitaaPhotoHash(photoURL string) string {
+	const marker = "download_"
+	i := strings.Index(photoURL, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := photoURL[i+len(marker):]
+	if q := strings.IndexAny(rest, "?#"); q >= 0 {
+		rest = rest[:q]
+	}
+	return rest
 }
 
 func extFromURL(u string) string {
@@ -481,19 +517,19 @@ func (p *WordPress) do(ctx context.Context, method, path string, body []byte) ([
 	return respBody, nil
 }
 
-// renderContent picks the best layout for this post:
-//   - if the target category has an existing published post, clone its
-//     raw shortcode structure verbatim and only swap the last
-//     [vc_column_text] body and the first [vc_single_image] id
-//   - otherwise fall back to a simple WPBakery wrap so the post still
-//     sits in the right column grid
+// renderContent picks the best layout for this post, in priority order:
+//  1. If a bundled per-category template exists (internal/publisher/
+//     templates/<slug>.tmpl) it's filled with placeholders extracted
+//     from the channel message. Source post is still fetched so the
+//     helper plugin can copy its meta (layout, WPBakery).
+//  2. Otherwise, clone the latest published post's raw shortcode tree
+//     and swap the last [vc_column_text] body + first vc_single_image
+//     id with the new content / featured media.
+//  3. Otherwise, a plain WPBakery row/column wrap around the body.
 //
-// Returns the source post id (0 if no template was found) and the
-// rendered content. The id lets Publish hand it off to the
-// clone-post helper plugin so all the source's post_meta tags along.
-//
-// Errors fetching the template are logged and degrade to the fallback;
-// publishing should never block on a missing template.
+// Returns the source post id (0 if no source post was found) and the
+// rendered content. The id lets Publish hand it off to the helper
+// plugin so all the source's post_meta tags along.
 func (p *WordPress) renderContent(ctx context.Context, msg router.Routed, catID, featuredID int) (int, string) {
 	sourceID, raw, err := p.fetchTemplate(ctx, catID)
 	if err != nil {
@@ -501,6 +537,18 @@ func (p *WordPress) renderContent(ctx context.Context, msg router.Routed, catID,
 			"category", msg.CategoryFa, "err", err)
 		return 0, p.renderHTML(msg)
 	}
+
+	// Preferred path: per-category template file. Doesn't need the
+	// source raw, only its id (for the helper plugin).
+	if tmpl, ok := loadCategoryTemplate(msg.Category); ok {
+		if vars := extractCategoryVars(msg, featuredID); vars != nil {
+			out := renderCategoryTemplate(tmpl, vars)
+			p.log.Info("wordpress: rendered with bundled category template",
+				"category", msg.CategoryFa, "slug", msg.Category, "source_id", sourceID)
+			return sourceID, out
+		}
+	}
+
 	if raw == "" {
 		p.log.Info("wordpress: no template post in category, using simple wrap",
 			"category", msg.CategoryFa)
@@ -512,7 +560,7 @@ func (p *WordPress) renderContent(ctx context.Context, msg router.Routed, catID,
 			"category", msg.CategoryFa)
 		return 0, p.renderHTML(msg)
 	}
-	p.log.Info("wordpress: rendered with category template",
+	p.log.Info("wordpress: rendered with source-post clone",
 		"category", msg.CategoryFa, "source_id", sourceID, "template_chars", len(raw))
 	return sourceID, out
 }

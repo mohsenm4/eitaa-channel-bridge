@@ -21,12 +21,6 @@ type Routed struct {
 	EventDate  string   `json:"event_date,omitempty"`
 	Hashtags   []string `json:"hashtags"`
 
-	// ParentPostID is the target post ID that #آرشیو follow-ups should
-	// attach to. The runner resolves it from state by looking up the
-	// reply-to message ID. 0 means "no parent" (regular post, or
-	// archive whose parent isn't tracked).
-	ParentPostID int `json:"parent_post_id,omitempty"`
-
 	// Warnings carry format problems the channel author should fix.
 	// The bridge still publishes the post (as a draft); the runner
 	// writes these to data/warnings.log for review.
@@ -96,22 +90,6 @@ func (r *Router) RouteAll(msgs []eitaa.Message) []Routed {
 		out[i] = r.Route(m)
 	}
 	return out
-}
-
-// ArchiveHashtag identifies follow-up messages whose photos should be
-// attached to the most recently published post instead of producing a
-// new one.
-const ArchiveHashtag = "آرشیو"
-
-// IsArchive reports whether this message is a follow-up carrying extra
-// photos for the previous post.
-func (r Routed) IsArchive() bool {
-	for _, t := range r.Hashtags {
-		if t == ArchiveHashtag {
-			return true
-		}
-	}
-	return false
 }
 
 // pickCategory returns the first match; config order is the tie-breaker.
