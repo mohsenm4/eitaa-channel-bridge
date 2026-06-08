@@ -1,5 +1,4 @@
-// Package router classifies a parsed Eitaa message and extracts display
-// fields (title, subtitle, event date). See docs/posting-guide.md.
+// Package router classifies a parsed Eitaa message and extracts title / date / hashtags.
 package router
 
 import (
@@ -21,26 +20,16 @@ type Routed struct {
 	EventDate  string   `json:"event_date,omitempty"`
 	Hashtags   []string `json:"hashtags"`
 
-	// Warnings carry format problems the channel author should fix.
-	// The bridge still publishes the post (as a draft); the runner
-	// writes these to data/warnings.log for review.
+	// Warnings carry format issues the channel author should fix; runner writes them to data/warnings.log.
 	Warnings []string `json:"warnings,omitempty"`
 }
 
-// Marker prefixes the channel posting guide tells admins to use.
-// Authors prefix lines with these emoji so the bridge can pull the
-// title/date out and leave the rest as body.
-//
-// BodyMarker is a hint for human readers — the bridge strips it from
-// the line but otherwise treats the content as normal body text.
+// Line-prefix markers the channel posting guide tells admins to use.
 const (
-	TitleMarker = "📌"
-	DateMarker  = "📅"
-	BodyMarker  = "📝"
-
-	// Deprecated, kept only so the Routed.Subtitle field can still be
-	// populated by legacy messages. New channel guide drops subtitles.
-	SubtitleMarker = "🟩"
+	TitleMarker    = "📌"
+	DateMarker     = "📅"
+	BodyMarker     = "📝"
+	SubtitleMarker = "🟩" // legacy; kept so old messages still parse.
 
 	titleMaxLen = 80
 )

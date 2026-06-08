@@ -10,11 +10,7 @@ import (
 //go:embed templates/*.tmpl
 var templateFS embed.FS
 
-// loadCategoryTemplate returns the raw template text for a category
-// slug, or ("", false) if no template file is bundled for it. The
-// publisher falls back to the in-place "preserve & swap" logic when
-// false is returned, so adding a category is just dropping a .tmpl in
-// templates/ — no code change.
+// loadCategoryTemplate returns the raw template text for a slug, or ("", false) if no .tmpl is bundled.
 func loadCategoryTemplate(slug string) (string, bool) {
 	data, err := templateFS.ReadFile("templates/" + slug + ".tmpl")
 	if err != nil {
@@ -23,11 +19,7 @@ func loadCategoryTemplate(slug string) (string, bool) {
 	return string(data), true
 }
 
-// renderCategoryTemplate fills {{KEY}} placeholders in tmpl using vars
-// (string substitution; templates are trusted, so no html/template).
-// Unknown keys are left as-is so missing fields surface as visible
-// {{...}} placeholders in the draft — easier to spot in review than a
-// silently empty slot.
+// renderCategoryTemplate fills {{KEY}} placeholders by string substitution; unknown keys stay visible.
 func renderCategoryTemplate(tmpl string, vars map[string]string) string {
 	out := tmpl
 	for k, v := range vars {
@@ -36,9 +28,7 @@ func renderCategoryTemplate(tmpl string, vars map[string]string) string {
 	return out
 }
 
-// extractCategoryVars produces the placeholder map for a category. Each
-// category has its own parser keyed off the slug. Returning nil means
-// "no parser for this category — let the caller fall back".
+// extractCategoryVars returns the placeholder map for a category, or nil to skip templating.
 func extractCategoryVars(msg router.Routed, featuredID int) map[string]string {
 	switch msg.Category {
 	case "qarz-al-hasaneh", "tavanmandsazi", "rezvan",
@@ -48,11 +38,7 @@ func extractCategoryVars(msg router.Routed, featuredID int) map[string]string {
 	return nil
 }
 
-// parseSimpleReport is the no-table parser for narrative-driven
-// categories. Featured image isn't injected into content (the theme
-// renders it from featured_media); we only fill body and the centered
-// title repeat at the bottom — the pattern used by existing
-// توانمندسازی posts.
+// parseSimpleReport is the narrative-style parser: title + date + body (featured image set via featured_media).
 func parseSimpleReport(msg router.Routed, _ int) map[string]string {
 	body := strings.TrimSpace(stripMarkersAndHashtags(msg.Text))
 	return map[string]string{
@@ -62,9 +48,7 @@ func parseSimpleReport(msg router.Routed, _ int) map[string]string {
 	}
 }
 
-// stripMarkersAndHashtags removes lines that start with a router marker
-// (📌 / 📅 / 📝 / legacy 🟩) and lines that are only hashtags, leaving
-// the substantive body for regex matching.
+// stripMarkersAndHashtags drops 📌/📅/📝/🟩 lines and hashtag-only lines from the message text.
 func stripMarkersAndHashtags(text string) string {
 	var b strings.Builder
 	for _, line := range strings.Split(text, "\n") {
@@ -73,8 +57,7 @@ func stripMarkersAndHashtags(text string) string {
 			b.WriteByte('\n')
 			continue
 		}
-		if hasAnyPrefix(t, router.TitleMarker, router.DateMarker,
-			router.BodyMarker, router.SubtitleMarker) {
+		if hasAnyPrefix(t, router.TitleMarker, router.DateMarker, router.BodyMarker, router.SubtitleMarker) {
 			continue
 		}
 		if isHashtagOnlyLine(t) {

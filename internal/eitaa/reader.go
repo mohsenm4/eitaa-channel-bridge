@@ -30,9 +30,7 @@ type Message struct {
 	Text          string    `json:"text"`
 	TextHTML      string    `json:"text_html,omitempty"`
 	Photos        []string  `json:"photos,omitempty"`
-	// ReplyToID is the source-channel message ID this post replies to,
-	// or 0 if it isn't a reply. Captured for the archive log; not
-	// consumed by the publisher.
+	// ReplyToID is the source-channel ID this post replies to (0 if not a reply); archive-only.
 	ReplyToID int `json:"reply_to_id,omitempty"`
 }
 
@@ -241,8 +239,7 @@ func extractBackgroundURL(style string) string {
 	return m[1]
 }
 
-// parseReplyID extracts the trailing message ID from a reply href
-// like "/channel/123". Returns 0 if no digits are found.
+// parseReplyID extracts the trailing message ID from a reply href like "/channel/123".
 func parseReplyID(href string) int {
 	if i := strings.LastIndex(href, "/"); i >= 0 {
 		if id, err := strconv.Atoi(href[i+1:]); err == nil {
@@ -264,8 +261,7 @@ func absURL(u string) string {
 
 var nonDigit = regexp.MustCompile(`[^0-9]`)
 
-// parseViews prefers data-count (a clean integer); the visible text can be
-// localised like "۱.۲هزار" and the digit-only fallback loses the scale.
+// parseViews prefers data-count (clean integer) since visible text loses scale on values like "۱.۲هزار".
 func parseViews(dataCount, fallback string) (int, error) {
 	if dataCount != "" {
 		if v, err := strconv.Atoi(strings.TrimSpace(dataCount)); err == nil {

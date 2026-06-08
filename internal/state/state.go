@@ -1,6 +1,4 @@
-// Package state persists processed message IDs per channel, along with
-// the target post ID each one produced (0 if the message was skipped or
-// the target doesn't expose post IDs).
+// Package state persists processed message IDs per channel and their resulting target post IDs.
 package state
 
 import (
@@ -19,9 +17,7 @@ type Store struct {
 	data map[string]map[int]int
 }
 
-// Load reads the store; a missing file is treated as empty.
-// Accepts both the new map format and the legacy []int format so old
-// seen.json files keep working.
+// Load reads the store (missing file = empty); accepts both the map and the legacy []int formats.
 func Load(path string) (*Store, error) {
 	s := &Store{path: path, data: map[string]map[int]int{}}
 	b, err := os.ReadFile(path)
@@ -69,8 +65,7 @@ func (s *Store) Count(channel string) int {
 	return len(s.data[channel])
 }
 
-// Mark records a message as seen with no associated post ID.
-// Use for skipped messages or targets that don't have a post ID.
+// Mark records a message as seen without a post ID (skipped messages or post-less targets).
 func (s *Store) Mark(channel string, id int) {
 	if s.data[channel] == nil {
 		s.data[channel] = map[int]int{}
@@ -80,9 +75,7 @@ func (s *Store) Mark(channel string, id int) {
 	}
 }
 
-// MarkWithPost records a message as seen and remembers the WP post ID
-// it produced. Lets #آرشیو follow-ups find the right post via reply
-// chain even after a restart.
+// MarkWithPost records a message as seen and remembers the post ID it produced (used by #آرشیو reply chains).
 func (s *Store) MarkWithPost(channel string, eitaaID, postID int) {
 	if s.data[channel] == nil {
 		s.data[channel] = map[int]int{}
@@ -90,8 +83,7 @@ func (s *Store) MarkWithPost(channel string, eitaaID, postID int) {
 	s.data[channel][eitaaID] = postID
 }
 
-// PostID returns the target post ID for an eitaa message, or 0 if the
-// message wasn't seen or didn't produce a post.
+// PostID returns the post ID an eitaa message produced, or 0 if unseen or post-less.
 func (s *Store) PostID(channel string, eitaaID int) int {
 	if s.data[channel] == nil {
 		return 0
