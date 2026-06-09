@@ -162,7 +162,7 @@ a:hover { text-decoration: underline; }
   align-self: flex-start;
 }
 
-.card-event-date::before { content: "🗓 "; margin-inline-end: 4px; }
+.card-event-date::before { content: "📅 "; margin-inline-end: 4px; }
 
 .card-photos {
   display: grid;

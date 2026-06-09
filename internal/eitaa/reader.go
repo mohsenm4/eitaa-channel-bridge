@@ -30,6 +30,8 @@ type Message struct {
 	Text          string    `json:"text"`
 	TextHTML      string    `json:"text_html,omitempty"`
 	Photos        []string  `json:"photos,omitempty"`
+	// ReplyToID is the source-channel ID this post replies to (0 if not a reply); archive-only.
+	ReplyToID int `json:"reply_to_id,omitempty"`
 }
 
 type Client struct {
@@ -163,6 +165,10 @@ func parseMessage(channel string, root *html.Node, dataPost string) Message {
 			if u := extractBackgroundURL(attr(n, "style")); u != "" {
 				msg.Photos = append(msg.Photos, absURL(u))
 			}
+		case n.Data == "a" && hasClass(n, "etme_widget_message_reply"):
+			if id := parseReplyID(attr(n, "href")); id > 0 {
+				msg.ReplyToID = id
+			}
 		}
 	})
 
@@ -233,6 +239,16 @@ func extractBackgroundURL(style string) string {
 	return m[1]
 }
 
+// parseReplyID extracts the trailing message ID from a reply href like "/channel/123".
+func parseReplyID(href string) int {
+	if i := strings.LastIndex(href, "/"); i >= 0 {
+		if id, err := strconv.Atoi(href[i+1:]); err == nil {
+			return id
+		}
+	}
+	return 0
+}
+
 func absURL(u string) string {
 	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
 		return u
@@ -245,8 +261,7 @@ func absURL(u string) string {
 
 var nonDigit = regexp.MustCompile(`[^0-9]`)
 
-// parseViews prefers data-count (a clean integer); the visible text can be
-// localised like "۱.۲هزار" and the digit-only fallback loses the scale.
+// parseViews prefers data-count (clean integer) since visible text loses scale on values like "۱.۲هزار".
 func parseViews(dataCount, fallback string) (int, error) {
 	if dataCount != "" {
 		if v, err := strconv.Atoi(strings.TrimSpace(dataCount)); err == nil {

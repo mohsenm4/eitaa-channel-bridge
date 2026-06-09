@@ -10,11 +10,11 @@ import (
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/router"
 )
 
-// Publisher delivers a single routed message. A non-nil Publish error
-// keeps the message un-delivered and triggers a retry on the next tick.
+// Publisher delivers one routed message. A non-nil error leaves the message un-delivered and retried.
+// Returned postID is the target's post identifier (0 for post-less targets or archive follow-ups).
 type Publisher interface {
 	Name() string
-	Publish(ctx context.Context, msg router.Routed) error
+	Publish(ctx context.Context, msg router.Routed) (postID int, err error)
 	Close() error
 }
 
@@ -34,8 +34,7 @@ func New(cfg config.Target, log *slog.Logger) (Publisher, error) {
 	}
 }
 
-// ShouldPublish returns (publish?, log-friendly reason). A message is
-// published iff no hashtag is in SkipHashtags and Category is non-empty.
+// ShouldPublish reports whether to publish msg, with a log-friendly reason for either outcome.
 func ShouldPublish(p config.Publishing, msg router.Routed) (bool, string) {
 	tags := tagSet(msg.Hashtags)
 	for _, skip := range p.SkipHashtags {

@@ -1,4 +1,4 @@
-// Package state persists processed message IDs per channel.
+// Package state persists processed message IDs per channel with the post ID, text fingerprint, and time.
 package state
 
 import (
@@ -9,16 +9,25 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"time"
 )
+
+// Entry records what we did with one Eitaa message and how to recognise its duplicates / edits later.
+type Entry struct {
+	PostID int    `json:"post,omitempty"` // 0 = seen but no post (skipped, inbox, or pre-fingerprint)
+	FP     string `json:"fp,omitempty"`   // sha256(text)[:16]; empty for legacy / inbox / skip entries
+	TS     int64  `json:"ts,omitempty"`   // msg.Date.Unix(); 0 means "no time on record"
+}
 
 type Store struct {
 	path string
-	data map[string]map[int]bool
+	data map[string]map[int]Entry // channel → eitaa id → entry
 }
 
-// Load reads the store; a missing file is treated as empty.
+// Load reads the store (missing file = empty); accepts the new {post,fp,ts} format and two older shapes.
 func Load(path string) (*Store, error) {
-	s := &Store{path: path, data: map[string]map[int]bool{}}
+	s := &Store{path: path, data: map[string]map[int]Entry{}}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -29,48 +38,128 @@ func Load(path string) (*Store, error) {
 	if len(b) == 0 {
 		return s, nil
 	}
-	raw := map[string][]int{}
-	if err := json.Unmarshal(b, &raw); err != nil {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(b, &top); err != nil {
 		return nil, fmt.Errorf("parse state: %w", err)
 	}
-	for ch, ids := range raw {
-		set := make(map[int]bool, len(ids))
-		for _, id := range ids {
-			set[id] = true
-		}
-		s.data[ch] = set
+	for ch, innerRaw := range top {
+		s.data[ch] = parseChannel(innerRaw)
 	}
 	return s, nil
 }
 
+// parseChannel decodes one channel's slice (legacy []int) or map (any-version) shape.
+func parseChannel(raw json.RawMessage) map[int]Entry {
+	var ids []int
+	if err := json.Unmarshal(raw, &ids); err == nil {
+		m := make(map[int]Entry, len(ids))
+		for _, id := range ids {
+			m[id] = Entry{}
+		}
+		return m
+	}
+	var inner map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &inner); err != nil {
+		return map[int]Entry{}
+	}
+	m := make(map[int]Entry, len(inner))
+	for idStr, val := range inner {
+		id, err := strconv.Atoi(idStr)
+		if err != nil {
+			continue
+		}
+		var e Entry
+		if err := json.Unmarshal(val, &e); err == nil {
+			m[id] = e
+			continue
+		}
+		var postID int
+		if err := json.Unmarshal(val, &postID); err == nil {
+			m[id] = Entry{PostID: postID}
+		}
+	}
+	return m
+}
+
 func (s *Store) Seen(channel string, id int) bool {
-	return s.data[channel] != nil && s.data[channel][id]
+	_, ok := s.data[channel][id]
+	return ok
 }
 
 func (s *Store) Count(channel string) int {
 	return len(s.data[channel])
 }
 
+// Mark records a message as seen with no metadata (skipped / inbox / post-less targets).
 func (s *Store) Mark(channel string, id int) {
-	if s.data[channel] == nil {
-		s.data[channel] = map[int]bool{}
+	s.ensure(channel)
+	if _, ok := s.data[channel][id]; !ok {
+		s.data[channel][id] = Entry{}
 	}
-	s.data[channel][id] = true
 }
 
-// Save writes the store atomically (write-then-rename).
+// MarkWithPost records seen + the post ID, no fingerprint (kept for backward compat).
+func (s *Store) MarkWithPost(channel string, eitaaID, postID int) {
+	s.ensure(channel)
+	s.data[channel][eitaaID] = Entry{PostID: postID}
+}
+
+// MarkPublished records seen + post ID + fingerprint + msg time, the richest form (used for dedupe / edit detection).
+func (s *Store) MarkPublished(channel string, eitaaID, postID int, fp string, t time.Time) {
+	s.ensure(channel)
+	s.data[channel][eitaaID] = Entry{PostID: postID, FP: fp, TS: t.Unix()}
+}
+
+// PostID returns the post ID a message produced, or 0 if unseen / post-less.
+func (s *Store) PostID(channel string, eitaaID int) int {
+	return s.data[channel][eitaaID].PostID
+}
+
+// FindRecentDuplicate scans channel for a prior entry with the same fp whose ts is within window of msgTime.
+// Returns the original eitaa id + post id if found. Empty fp or zero window short-circuits to "not found".
+func (s *Store) FindRecentDuplicate(channel, fp string, msgTime time.Time, window time.Duration) (eitaaID, postID int, ok bool) {
+	if fp == "" || window <= 0 {
+		return 0, 0, false
+	}
+	msgTS := msgTime.Unix()
+	for id, e := range s.data[channel] {
+		if e.FP != fp || e.TS == 0 {
+			continue
+		}
+		diff := msgTS - e.TS
+		if diff < 0 {
+			diff = -diff
+		}
+		if time.Duration(diff)*time.Second <= window {
+			return id, e.PostID, true
+		}
+	}
+	return 0, 0, false
+}
+
+func (s *Store) ensure(channel string) {
+	if s.data[channel] == nil {
+		s.data[channel] = map[int]Entry{}
+	}
+}
+
+// Save writes the new {post,fp,ts} format atomically; key order is deterministic for small diffs.
 func (s *Store) Save() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
-	out := map[string][]int{}
-	for ch, set := range s.data {
-		ids := make([]int, 0, len(set))
-		for id := range set {
+	out := map[string]map[string]Entry{}
+	for ch, m := range s.data {
+		ids := make([]int, 0, len(m))
+		for id := range m {
 			ids = append(ids, id)
 		}
 		sort.Ints(ids)
-		out[ch] = ids
+		inner := make(map[string]Entry, len(ids))
+		for _, id := range ids {
+			inner[strconv.Itoa(id)] = m[id]
+		}
+		out[ch] = inner
 	}
 	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {

@@ -32,10 +32,10 @@ func NewFile(path string) (*File, error) {
 
 func (p *File) Name() string { return "file:" + p.path }
 
-func (p *File) Publish(_ context.Context, msg router.Routed) error {
+func (p *File) Publish(_ context.Context, msg router.Routed) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.enc.Encode(msg)
+	return 0, p.enc.Encode(msg)
 }
 
 func (p *File) Close() error {

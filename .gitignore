@@ -1,4 +1,4 @@
-# Go
+# Go build artefacts
 bin/
 dist/
 *.exe
@@ -6,7 +6,7 @@ dist/
 *.out
 coverage.out
 
-# Configuration with secrets
+# Secrets (.env.example is tracked)
 .env
 .env.local
 .env.*.local
@@ -17,13 +17,14 @@ coverage.out
 # Generated static site (HTML publisher output)
 site/
 
-# IDE
+# IDE / OS
 .vscode/
 .idea/
 *.swp
 .DS_Store
-
-# OS
 Thumbs.db
 
 **debug_bin**
+
+# WP helper plugin lives on disk only — uploaded manually via WP admin.
+wp-plugin/

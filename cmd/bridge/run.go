@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"log/slog"
 	"os"
@@ -49,38 +51,83 @@ func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
 
 func (r *runner) Close() error { return r.pub.Close() }
 
-// processBatch routes/filters/publishes msgs and returns how many were handled
-// (published or deliberately skipped). Publish failures are NOT counted so the
-// next tick retries them.
+// processBatch returns how many messages were handled (published or deliberately skipped).
+// Publish failures are NOT counted, so the next tick retries them.
 func (r *runner) processBatch(ctx context.Context, msgs []eitaa.Message) int {
 	processed := 0
 	for _, m := range msgs {
 		if r.store.Seen(r.cfg.Source.Channel, m.ID) {
 			continue
 		}
-		routed := r.rt.Route(m)
-		ok, reason := publisher.ShouldPublish(r.cfg.Publishing, routed)
-		if !ok {
-			r.log.Info("skipped", "id", m.ID, "reason", reason)
-			r.store.Mark(r.cfg.Source.Channel, m.ID)
+		if r.processOne(ctx, m) {
 			processed++
-			continue
 		}
-		if err := r.pub.Publish(ctx, routed); err != nil {
-			r.log.Error("publish failed", "id", m.ID, "err", err)
-			continue
-		}
-		if err := jsonio.Append(r.cfg.Storage.ArchiveFile, m); err != nil {
-			r.log.Warn("archive failed", "id", m.ID, "err", err)
-		}
-		r.store.Mark(r.cfg.Source.Channel, m.ID)
-		processed++
-		r.log.Info("published",
-			"id", m.ID,
-			"category", routed.CategoryFa,
-			"title", utils.DisplayTitle(routed.Title, 50))
 	}
 	return processed
+}
+
+// processOne returns true if the message reached a terminal state (published / inbox / skip).
+// Returns false for transient failures so the next tick retries.
+func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
+	routed := r.rt.Route(m)
+
+	if tag := matchInboxHashtag(r.cfg.Publishing.InboxHashtags, routed.Hashtags); tag != "" {
+		inboxPath := inboxFilePath(r.cfg.Storage.ArchiveFile)
+		if err := appendInbox(inboxPath, m, tag); err != nil {
+			r.log.Warn("inbox write failed — will retry next tick",
+				"id", m.ID, "hashtag", tag, "err", err)
+			return false
+		}
+		r.log.Info("inbox", "id", m.ID, "hashtag", tag, "link", m.Link, "file", inboxPath,
+			"msg", "needs manual review — copy text into the homepage slider")
+		r.store.Mark(r.cfg.Source.Channel, m.ID)
+		return true
+	}
+
+	ok, reason := publisher.ShouldPublish(r.cfg.Publishing, routed)
+	if !ok {
+		r.log.Info("skipped", "id", m.ID, "reason", reason)
+		r.store.Mark(r.cfg.Source.Channel, m.ID)
+		return true
+	}
+
+	fp := fingerprint(m.Text)
+	if origID, origPost, dup := r.store.FindRecentDuplicate(
+		r.cfg.Source.Channel, fp, m.Date, r.cfg.Publishing.DedupeWindow,
+	); dup {
+		r.log.Info("dedupe",
+			"id", m.ID, "duplicate_of", origID, "wp_post", origPost,
+			"msg", "Eitaa double-send — same text within window, not republishing")
+		r.store.Mark(r.cfg.Source.Channel, m.ID)
+		return true
+	}
+
+	postID, err := r.pub.Publish(ctx, routed)
+	if err != nil {
+		r.log.Error("publish failed", "id", m.ID, "err", err)
+		return false
+	}
+
+	if len(routed.Warnings) > 0 {
+		if werr := appendWarning(r.cfg.Storage.ArchiveFile, routed); werr != nil {
+			r.log.Warn("warnings log write failed", "id", m.ID, "err", werr)
+		}
+	}
+	if aerr := jsonio.Append(r.cfg.Storage.ArchiveFile, m); aerr != nil {
+		r.log.Warn("archive failed", "id", m.ID, "err", aerr)
+	}
+	r.store.MarkPublished(r.cfg.Source.Channel, m.ID, postID, fp, m.Date)
+	r.log.Info("published",
+		"id", m.ID, "wp_id", postID,
+		"category", routed.CategoryFa,
+		"title", utils.DisplayTitle(routed.Title, 50))
+	return true
+}
+
+// fingerprint hashes the message text so duplicate detection ignores Eitaa ID variance.
+func fingerprint(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:8])
 }
 
 func (r *runner) tick(ctx context.Context) {
@@ -101,10 +148,9 @@ func (r *runner) tick(ctx context.Context) {
 	}
 }
 
-// backfill walks ?before= pagination backwards up to max messages.
+// backfill walks Eitaa's ?before= pagination backwards up to max older messages.
 func (r *runner) backfill(ctx context.Context, max int) {
 	r.log.Info("backfill start", "max", max)
-
 	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	page, err := r.client.Fetch(fetchCtx, r.cfg.Source.Channel)
 	cancel()
@@ -113,7 +159,6 @@ func (r *runner) backfill(ctx context.Context, max int) {
 		return
 	}
 	collected := append([]eitaa.Message{}, page...)
-
 	for len(collected) < max {
 		if len(page) == 0 {
 			break
@@ -146,7 +191,6 @@ func (r *runner) Run(ctx context.Context) {
 	if r.store.Count(r.cfg.Source.Channel) == 0 && r.cfg.Source.BackfillMax > 0 {
 		r.backfill(ctx, r.cfg.Source.BackfillMax)
 	}
-
 	r.tick(ctx)
 	ticker := time.NewTicker(r.cfg.Source.PollInterval)
 	defer ticker.Stop()
@@ -179,6 +223,7 @@ func runRun(log *slog.Logger, args []string) {
 		"interval", cfg.Source.PollInterval.String(),
 		"backfill_max", cfg.Source.BackfillMax,
 		"categories", strings.Join(categoryTags(cfg.Publishing.Categories), ","),
+		"inbox", strings.Join(cfg.Publishing.InboxHashtags, ","),
 		"skip", strings.Join(cfg.Publishing.SkipHashtags, ","),
 	)
 
@@ -193,4 +238,21 @@ func categoryTags(cats []config.Category) []string {
 		out[i] = c.Hashtag
 	}
 	return out
+}
+
+// matchInboxHashtag returns the first message hashtag that's in the operator's inbox list, or "".
+func matchInboxHashtag(inbox, msgTags []string) string {
+	if len(inbox) == 0 || len(msgTags) == 0 {
+		return ""
+	}
+	set := make(map[string]bool, len(inbox))
+	for _, t := range inbox {
+		set[t] = true
+	}
+	for _, t := range msgTags {
+		if set[t] {
+			return t
+		}
+	}
+	return ""
 }

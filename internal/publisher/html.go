@@ -20,9 +20,7 @@ import (
 //go:embed htmlsite/*
 var htmlAssets embed.FS
 
-// HTML generates a static site under OutputDir. Embedded assets are written
-// on first run and never overwritten — delete OutputDir to force a refresh.
-// Each Publish rewrites posts.json, which the static page reads.
+// HTML generates a static site under OutputDir; assets are seeded once, posts.json is rewritten each Publish.
 type HTML struct {
 	cfg config.HTMLTarget
 	log *slog.Logger
@@ -47,11 +45,11 @@ func NewHTML(cfg config.HTMLTarget, log *slog.Logger) (*HTML, error) {
 
 func (p *HTML) Name() string { return "html:" + p.cfg.OutputDir }
 
-func (p *HTML) Publish(_ context.Context, msg router.Routed) error {
+func (p *HTML) Publish(_ context.Context, msg router.Routed) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.posts[msg.ID] = msg
-	return p.writePostsJSON()
+	return 0, p.writePostsJSON()
 }
 
 func (p *HTML) Close() error { return nil }
@@ -96,8 +94,7 @@ func (p *HTML) loadExisting() error {
 	}
 	var payload sitePayload
 	if err := json.Unmarshal(b, &payload); err != nil {
-		// Don't crash on a corrupt file — warn loudly so the operator
-		// notices their archive is being abandoned.
+		// Corrupt file → warn loudly so the operator notices the archive is being abandoned.
 		p.log.Warn("existing posts.json is unreadable, starting empty",
 			"path", p.postsPath(), "err", err)
 		return nil

@@ -1,5 +1,4 @@
-// Package router classifies a parsed Eitaa message and extracts display
-// fields (title, subtitle, event date). See docs/posting-guide.md.
+// Package router classifies a parsed Eitaa message and extracts title / date / hashtags.
 package router
 
 import (
@@ -20,13 +19,17 @@ type Routed struct {
 	Subtitle   string   `json:"subtitle,omitempty"`
 	EventDate  string   `json:"event_date,omitempty"`
 	Hashtags   []string `json:"hashtags"`
+
+	// Warnings carry format issues the channel author should fix; runner writes them to data/warnings.log.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
-// Marker prefixes the channel posting guide tells admins to use.
+// Line-prefix markers the channel posting guide tells admins to use.
 const (
-	TitleMarker    = "🔻"
-	SubtitleMarker = "🟩"
-	DateMarker     = "🗓"
+	TitleMarker    = "📌"
+	DateMarker     = "📅"
+	BodyMarker     = "📝"
+	SubtitleMarker = "🟩" // legacy; kept so old messages still parse.
 
 	titleMaxLen = 80
 )
@@ -59,6 +62,13 @@ func (r *Router) Route(msg eitaa.Message) Routed {
 	}
 	if out.Title == "" {
 		out.Title = r.fallbackTitle(msg.Text)
+		if out.Title != "" {
+			out.Warnings = append(out.Warnings,
+				"بدون "+TitleMarker+" — خط اول به‌عنوان عنوان گذاشته شد")
+		}
+	}
+	if out.EventDate == "" {
+		out.Warnings = append(out.Warnings, "بدون "+DateMarker+" — تاریخ تنظیم نشد")
 	}
 	return out
 }
