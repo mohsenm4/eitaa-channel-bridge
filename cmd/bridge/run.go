@@ -80,14 +80,14 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 		}
 		r.log.Info("inbox", "id", m.ID, "hashtag", tag, "link", m.Link, "file", inboxPath,
 			"msg", "needs manual review — copy text into the homepage slider")
-		r.store.Mark(r.cfg.Source.Channel, m.ID)
+		r.markSeenAndPersist(m.ID)
 		return true
 	}
 
 	ok, reason := publisher.ShouldPublish(r.cfg.Publishing, routed)
 	if !ok {
 		r.log.Info("skipped", "id", m.ID, "reason", reason)
-		r.store.Mark(r.cfg.Source.Channel, m.ID)
+		r.markSeenAndPersist(m.ID)
 		return true
 	}
 
@@ -98,7 +98,7 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 		r.log.Info("dedupe",
 			"id", m.ID, "duplicate_of", origID, "wp_post", origPost,
 			"msg", "Eitaa double-send — same text within window, not republishing")
-		r.store.Mark(r.cfg.Source.Channel, m.ID)
+		r.markSeenAndPersist(m.ID)
 		return true
 	}
 
@@ -108,6 +108,8 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 		return false
 	}
 
+	// Persist seen-state immediately so a crash before end-of-tick can't re-publish (issue #6).
+	r.markPublishedAndPersist(m.ID, postID, fp, m.Date)
 	if len(routed.Warnings) > 0 {
 		if werr := appendWarning(r.cfg.Storage.ArchiveFile, routed); werr != nil {
 			r.log.Warn("warnings log write failed", "id", m.ID, "err", werr)
@@ -116,12 +118,30 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 	if aerr := jsonio.Append(r.cfg.Storage.ArchiveFile, m); aerr != nil {
 		r.log.Warn("archive failed", "id", m.ID, "err", aerr)
 	}
-	r.store.MarkPublished(r.cfg.Source.Channel, m.ID, postID, fp, m.Date)
 	r.log.Info("published",
 		"id", m.ID, "wp_id", postID,
 		"category", routed.CategoryFa,
 		"title", utils.DisplayTitle(routed.Title, 50))
 	return true
+}
+
+// markSeenAndPersist Marks the message as seen and flushes the state file.
+// A save failure is logged loudly — the message will be re-processed on restart.
+func (r *runner) markSeenAndPersist(id int) {
+	r.store.Mark(r.cfg.Source.Channel, id)
+	if err := r.store.Save(); err != nil {
+		r.log.Warn("state save failed — message may be re-processed if bridge restarts",
+			"id", id, "err", err)
+	}
+}
+
+// markPublishedAndPersist records the post ID + fingerprint and flushes state in one shot.
+func (r *runner) markPublishedAndPersist(id, postID int, fp string, t time.Time) {
+	r.store.MarkPublished(r.cfg.Source.Channel, id, postID, fp, t)
+	if err := r.store.Save(); err != nil {
+		r.log.Warn("state save failed — message may be re-processed if bridge restarts",
+			"id", id, "err", err)
+	}
 }
 
 // fingerprint hashes the message text so duplicate detection ignores Eitaa ID variance.
@@ -138,12 +158,8 @@ func (r *runner) tick(ctx context.Context) {
 		r.log.Error("fetch failed", "err", err)
 		return
 	}
-	n := r.processBatch(ctx, msgs)
-	if n > 0 {
-		if err := r.store.Save(); err != nil {
-			r.log.Warn("state save failed", "err", err)
-		}
-	} else {
+	// State is persisted per-message inside processOne; no end-of-tick save needed.
+	if n := r.processBatch(ctx, msgs); n == 0 {
 		r.log.Info("idle", "msg", "no new messages")
 	}
 }
@@ -181,9 +197,6 @@ func (r *runner) backfill(ctx context.Context, max int) {
 		collected = collected[len(collected)-max:]
 	}
 	n := r.processBatch(ctx, collected)
-	if err := r.store.Save(); err != nil {
-		r.log.Warn("state save failed", "err", err)
-	}
 	r.log.Info("backfill done", "fetched", len(collected), "processed", n)
 }
 
