@@ -25,6 +25,3 @@ site/
 Thumbs.db
 
 **debug_bin**
-
-# WP helper plugin lives on disk only — uploaded manually via WP admin.
-wp-plugin/
