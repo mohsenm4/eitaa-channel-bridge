@@ -1,17 +1,15 @@
-// Package publisher delivers routed messages to a destination (file, HTML site, WordPress).
+// Package publisher delivers routed messages to the WordPress target.
 package publisher
 
 import (
 	"context"
-	"fmt"
-	"log/slog"
 
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/config"
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/router"
 )
 
 // Publisher delivers one routed message. A non-nil error leaves the message un-delivered and retried.
-// Returned postID is the target's post identifier (0 for post-less targets or archive follow-ups).
+// Returned postID is the target's post identifier (0 for archive follow-ups).
 type Publisher interface {
 	Name() string
 	Publish(ctx context.Context, msg router.Routed) (postID int, err error)
@@ -20,22 +18,6 @@ type Publisher interface {
 	// Delete removes an already-published post (Eitaa-side deletion sync).
 	Delete(ctx context.Context, postID int) error
 	Close() error
-}
-
-func New(cfg config.Target, log *slog.Logger) (Publisher, error) {
-	if log == nil {
-		log = slog.Default()
-	}
-	switch cfg.Type {
-	case config.TargetFile:
-		return NewFile(cfg.File.Path)
-	case config.TargetHTML:
-		return NewHTML(cfg.HTML, log)
-	case config.TargetWordPress:
-		return NewWordPress(cfg.WordPress, log), nil
-	default:
-		return nil, fmt.Errorf("unknown target type %q", cfg.Type)
-	}
 }
 
 // ShouldPublish reports whether to publish msg, with a log-friendly reason for either outcome.

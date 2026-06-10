@@ -36,10 +36,7 @@ func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	pub, err := publisher.New(cfg.Target, log)
-	if err != nil {
-		return nil, err
-	}
+	pub := publisher.NewWordPress(cfg.WordPress, log)
 	return &runner{
 		cfg:    cfg,
 		log:    log,
@@ -170,6 +167,7 @@ func (r *runner) tick(ctx context.Context) {
 // For each tracked message (PostID>0) whose ID is still inside the fetched page:
 //   - present in fetch with a different fingerprint → push an edit
 //   - absent from fetch → push a delete (one-shot, idempotent via Deleted flag)
+//
 // Message age does NOT gate this check — EditWatchWindow only controls polling cadence.
 // Late edits / deletes made hours later are still mirrored on the next cold-mode tick.
 func (r *runner) syncEditsAndDeletes(ctx context.Context, msgs []eitaa.Message) {

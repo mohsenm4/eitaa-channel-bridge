@@ -1,8 +1,8 @@
 # Eitaa Channel Bridge
 
-> A small bot that reads every new message published in a public Eitaa channel and republishes it on a target site, using a defined format.
+> A small bot that reads every new message published in a public Eitaa channel and republishes each one as a post on a WordPress site, classified by hashtag into the site's existing categories.
 >
-> Built for the channel of **Meraj Cultural & Religious Institute** ([@Merajyan](https://eitaa.com/Merajyan)), but the channel and the target site are both configured via `config.yaml`, so it works for any public Eitaa channel.
+> Built for **Meraj Cultural & Religious Institute** ([@Merajyan](https://eitaa.com/Merajyan)) → [fatemyoon.ir](https://fatemyoon.ir), but the channel and the destination WP site are both configured via `.env`, so it works for any public Eitaa channel + WP install.
 
 ---
 
@@ -10,15 +10,16 @@
 
 ```
 ┌───────────────┐      ┌──────────────┐      ┌──────────────┐
-│ Eitaa channel │  →   │  Bridge bot   │  →   │ Target site  │
-│ (source)      │      │ (this project)│      │ (configured)  │
+│ Eitaa channel │  →   │  Bridge bot   │  →   │ WordPress    │
+│ (source)      │      │ (this project)│      │ (REST API)   │
 └───────────────┘      └──────────────┘      └──────────────┘
 ```
 
-1. Every few minutes the bot checks the source channel.
-2. It identifies new messages (those it has not seen before).
-3. It publishes each new message via the configured target.
-4. It records every published ID in `data/seen.json` so nothing is sent twice.
+1. The bot polls the source channel (hot mode while recent messages are still inside the edit-watch window, cold mode otherwise).
+2. It identifies new messages, classifies each by hashtag, uploads photos to the WP media library, and creates a post via `/wp-json/wp/v2/posts` (or via the bundled `eitaa-bridge-helper` plugin when installed — preserves WPBakery / theme layout meta).
+3. When the author edits a message on Eitaa, the bot detects the fingerprint change and pushes a `POST /wp-json/wp/v2/posts/{id}` update.
+4. When the author deletes a message on Eitaa, the bot detects its disappearance from the visible page and sends the WP post to trash.
+5. Every published / skipped / inbox-routed ID is recorded in `data/seen.json` so the same message is never sent twice — even across restarts.
 
 ---
 
@@ -27,63 +28,55 @@
 ```
 eitaa-channel-bridge/
 ├── README.md
-├── config.yaml.example          ← sample config (copy to config.yaml)
+├── .env.example                ← sample env file (copy to .env)
 ├── go.mod / go.sum
+├── Dockerfile / docker-compose.yml
 ├── cmd/
 │   └── bridge/
-│       └── main.go              ← CLI entry point (dump, run)
+│       ├── main.go             ← CLI entry point (dump, run)
+│       ├── run.go              ← polling loop + edit/delete sync
+│       ├── dump.go             ← one-shot fetch + classification preview
+│       └── sidelog.go          ← inbox.log / warnings.log helpers
 ├── internal/
-│   ├── config/
-│   │   └── config.go            ← YAML loader + validation
-│   ├── eitaa/
-│   │   └── reader.go            ← fetches & parses the channel HTML
-│   ├── publisher/
-│   │   ├── publisher.go         ← Publisher interface + factory
-│   │   └── file.go              ← writes messages to a JSON Lines file
-│   └── state/
-│       └── state.go             ← tracks which message IDs were published
-└── data/                        ← runtime files (gitignored)
-    ├── seen.json                ← processed message IDs
-    ├── messages.jsonl           ← raw archive of every message seen
-    ├── published.jsonl          ← messages delivered to the target
-    ├── last_dump.json           ← pretty JSON from the last `bridge dump`
-    └── raw.html                 ← raw HTML from the last fetch
+│   ├── config/                 ← env-var loader + validation
+│   ├── eitaa/                  ← fetches & parses the channel HTML
+│   ├── router/                 ← hashtag → category routing + title/date extraction
+│   ├── publisher/              ← WordPress REST client + category templates
+│   ├── state/                  ← seen-IDs + fingerprint + WP post-ID store
+│   ├── jsonio/                 ← JSON/JSONL read/write helpers
+│   └── utils/                  ← misc (logger, display helpers)
+├── wp-plugin/
+│   └── eitaa-bridge-helper/    ← optional WP plugin for full-meta clone
+└── data/                       ← runtime files (gitignored)
+    ├── seen.json               ← per-channel ledger: id → {post, fp, ts, deleted}
+    ├── messages.jsonl          ← raw archive of every message seen
+    ├── inbox.log               ← hashtags routed for manual review
+    ├── warnings.log            ← per-message format issues
+    ├── last_dump.json          ← pretty JSON from the last `bridge dump`
+    └── raw.html                ← raw HTML from the last fetch
 ```
-
-Three things shape the bridge:
-
-- **Source** (`internal/eitaa`) — fetches `https://eitaa.com/<channel>` and parses each `.etme_widget_message` block into a `Message` struct.
-- **Publisher** (`internal/publisher`) — an interface with one implementation today (`file`). When the destination site is decided, a new publisher is added next to `file.go`.
-- **State** (`internal/state`) — a JSON-backed set of seen message IDs, keyed by channel.
 
 ---
 
 ## 3) Configuration
 
-Copy the example and edit:
+All config is environment variables, optionally seeded by a local `.env`. Copy the example:
 
 ```sh
-cp config.yaml.example config.yaml
+cp .env.example .env
 ```
 
-`config.yaml` is gitignored. The schema:
+Required variables:
 
-```yaml
-source:
-  channel: Merajyan           # channel username, without @
-  poll_interval: 5m           # 30s, 5m, 1h, …
+| Variable | Purpose |
+| --- | --- |
+| `EITAA_BRIDGE_SOURCE_CHANNEL` | channel username, no leading `@` |
+| `EITAA_BRIDGE_PUBLISHING_CATEGORIES` | comma-separated `hashtag\|slug\|label` triples |
+| `EITAA_BRIDGE_TARGET_WORDPRESS_URL` | site URL |
+| `EITAA_BRIDGE_TARGET_WORDPRESS_USERNAME` | WP user with publish rights |
+| `EITAA_BRIDGE_TARGET_WORDPRESS_APP_PASSWORD` | application password |
 
-target:
-  type: file                  # only "file" is implemented today
-  file:
-    path: data/published.jsonl
-
-storage:
-  seen_file: data/seen.json
-  archive_file: data/messages.jsonl
-```
-
-The loader applies defaults for unset fields and rejects the config with a clear error if anything required is missing or invalid (e.g. `source.channel must not include the leading @`).
+See [.env.example](.env.example) for the full schema with defaults and inline docs.
 
 ---
 
@@ -95,57 +88,32 @@ Build:
 go build -o bin/bridge ./cmd/bridge
 ```
 
-Both commands read `config.yaml` by default (override with `--config PATH`).
+Both commands read `.env` by default (override with `--env PATH`).
 
 ### `bridge dump` — one-shot inspection
 
-Fetches the channel once and writes raw HTML, pretty JSON, and the archive to disk. Does NOT publish. Use this to verify the parser and inspect the structure of messages.
+Fetches the channel once and writes raw HTML + the classified JSON to `data/`. Does NOT publish. Use this to verify the parser and preview which posts WOULD be published.
 
 ```sh
 go run ./cmd/bridge dump
 ```
 
-Sample output:
-
-```
-channel:  @Merajyan
-messages: 6
-raw html: data/raw.html
-pretty:   data/last_dump.json
-archive:  data/messages.jsonl
-
-  #2518  2026-04-07 06:01  views=1  photos=3  | موسسه_معراج #گزارش_تصویری …
-  #2521  2026-04-20 10:26  views=1  photos=2  | موسسه_معراج #گزارش_تصویری …
-  …
-```
-
 ### `bridge run` — continuous mode
 
-Polls the channel on `source.poll_interval`, publishes new messages via the configured target, archives them, and updates the seen-set. Safe to stop and restart — already-published messages are skipped on the next run.
+Polls the channel, publishes new messages, syncs edits/deletes onto WP, archives raw payloads, and persists state after every terminal action. Safe to stop and restart — already-processed messages are skipped on the next run.
 
 ```sh
 go run ./cmd/bridge run
-```
-
-Sample output:
-
-```
-source:   @Merajyan
-target:   file:data/published.jsonl
-interval: 5m0s
-press Ctrl+C to stop
-[09:14:54] published #2530 (.  بسم الله الرحمن الرحیم …)
-[09:19:54] no new messages
 ```
 
 ---
 
 ## 5) Parsed message format
 
-Every `Message` written to JSON has these fields:
+Every parsed `Message` has these fields:
 
 | Field | Type | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `id` | int | the numeric message ID inside the channel |
 | `channel` | string | channel username, without `@` |
 | `link` | string | canonical URL on eitaa.com |
@@ -156,38 +124,16 @@ Every `Message` written to JSON has these fields:
 | `text` | string | plain text with newlines preserved |
 | `text_html` | string | inner HTML of the message bubble |
 | `photos` | string[] | URLs of attached photos (empty for text-only posts) |
+| `reply_to_id` | int | the source-channel ID this post replies to (0 if not a reply) |
 
 ---
 
-## 6) Things still to be decided
-
-Before the WordPress (or other) target can be wired up:
-
-**Target site**
-
-- [ ] Platform? (WordPress, custom, …)
-- [ ] Site URL?
-- [ ] Auth method? (Application Password, token, …)
-
-**Post format**
-
-- [ ] Each Eitaa message becomes a Post, Page, or Custom Post Type?
-- [ ] Specific category / tag?
-- [ ] Where does the title come from? (Eitaa messages have no title — first line or date?)
-- [ ] How to handle images: re-upload to the site, or link back to eitaa.com?
-
-**Operations**
-
-- [ ] Where does it run? (Mac via launchd, VPS via systemd, …)
-
----
-
-## 7) Known limitations
+## 6) Known limitations
 
 - **Unofficial.** Eitaa has no documented API; the parser depends on the public-channel HTML and will need updates if that markup changes.
 - **Public channels only.** Private groups and channels are not accessible.
-- **Media.** Photo URLs are captured, but downloading/re-uploading them to the destination site is not yet implemented.
-- **Rate limits.** The default of one check every 5 minutes is intentionally conservative.
+- **Visible page only.** Edits and deletions are detected by comparing the seen-store against the most recent ~20 messages Eitaa renders. Messages that fall off the page can't be re-checked.
+- **Rate limits.** Cold-mode default is one fetch every 6 hours; hot mode (10s) only kicks in while a tracked message is still inside `EDIT_WATCH_WINDOW`.
 
 ---
 
