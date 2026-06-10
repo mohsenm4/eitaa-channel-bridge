@@ -33,6 +33,13 @@ type Source struct {
 	// EditWatchWindow: how long after a message is published to keep checking it for edits/deletes.
 	EditWatchWindow time.Duration
 	BackfillMax     int
+	// HealthcheckURL: if set, the bridge pings this URL on start and then every HealthcheckInterval so an
+	// external dead-man's-switch service (e.g. healthchecks.io) can alert when the bridge falls silent.
+	// Empty disables the feature.
+	HealthcheckURL string
+	// HealthcheckInterval: how often the heartbeat goroutine pings HealthcheckURL. Must be shorter than
+	// the Period configured at the dead-man's-switch service so a single missed ping does NOT alert.
+	HealthcheckInterval time.Duration
 }
 
 type Publishing struct {
@@ -95,6 +102,12 @@ func Load(envPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Source.BackfillMax = bm
+	cfg.Source.HealthcheckURL = envStr("SOURCE_HEALTHCHECK_URL")
+	hi, err := envDuration("SOURCE_HEALTHCHECK_INTERVAL")
+	if err != nil {
+		return nil, err
+	}
+	cfg.Source.HealthcheckInterval = hi
 
 	cats, err := parseCategories(envStr("PUBLISHING_CATEGORIES"))
 	if err != nil {
@@ -237,6 +250,9 @@ func (c *Config) applyDefaults() {
 	if c.Source.EditWatchWindow == 0 {
 		c.Source.EditWatchWindow = 1 * time.Hour
 	}
+	if c.Source.HealthcheckInterval == 0 {
+		c.Source.HealthcheckInterval = 12 * time.Minute
+	}
 	if c.Publishing.DedupeWindow == 0 {
 		c.Publishing.DedupeWindow = 10 * time.Second
 	}
@@ -267,6 +283,14 @@ func (c *Config) validate() error {
 	if c.Source.EditWatchWindow < c.Source.HotPollInterval {
 		return fmt.Errorf("EITAA_BRIDGE_SOURCE_EDIT_WATCH_WINDOW (%s) must be >= HOT_POLL_INTERVAL (%s)",
 			c.Source.EditWatchWindow, c.Source.HotPollInterval)
+	}
+	if c.Source.HealthcheckURL != "" {
+		if _, err := url.Parse(c.Source.HealthcheckURL); err != nil {
+			return fmt.Errorf("EITAA_BRIDGE_SOURCE_HEALTHCHECK_URL invalid: %w", err)
+		}
+		if c.Source.HealthcheckInterval < 30*time.Second {
+			return fmt.Errorf("EITAA_BRIDGE_SOURCE_HEALTHCHECK_INTERVAL too small (%s): use at least 30s", c.Source.HealthcheckInterval)
+		}
 	}
 	for i, cat := range c.Publishing.Categories {
 		if cat.Hashtag == "" || cat.Slug == "" || cat.Label == "" {
