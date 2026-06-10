@@ -15,9 +15,9 @@ import (
 
 // Entry records what we did with one Eitaa message and how to recognise its duplicates / edits later.
 type Entry struct {
-	PostID  int    `json:"post,omitempty"` // 0 = seen but no post (skipped, inbox, or pre-fingerprint)
-	FP      string `json:"fp,omitempty"`   // sha256(text)[:16]; empty for legacy / inbox / skip entries
-	TS      int64  `json:"ts,omitempty"`   // msg.Date.Unix(); 0 means "no time on record"
+	PostID  int    `json:"post,omitempty"`    // 0 = seen but no post (skipped, inbox, or pre-fingerprint)
+	FP      string `json:"fp,omitempty"`      // sha256(text)[:16]; empty for legacy / inbox / skip entries
+	TS      int64  `json:"ts,omitempty"`      // msg.Date.Unix(); 0 means "no time on record"
 	Deleted bool   `json:"deleted,omitempty"` // true once we've propagated a source-side deletion to the target.
 }
 

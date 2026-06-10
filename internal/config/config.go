@@ -20,7 +20,7 @@ const DefaultEnvPath = ".env"
 type Config struct {
 	Source     Source
 	Publishing Publishing
-	Target     Target
+	WordPress  WordPressTarget
 	Storage    Storage
 }
 
@@ -50,24 +50,6 @@ type Category struct {
 	Label   string
 }
 
-// Target describes where messages should be published.
-// Only the block matching Type is read.
-type Target struct {
-	Type      string
-	File      FileTarget
-	HTML      HTMLTarget
-	WordPress WordPressTarget
-}
-
-type FileTarget struct {
-	Path string
-}
-
-type HTMLTarget struct {
-	OutputDir string
-	SiteTitle string
-}
-
 type WordPressTarget struct {
 	URL         string
 	Username    string
@@ -80,12 +62,6 @@ type Storage struct {
 	SeenFile    string
 	ArchiveFile string
 }
-
-const (
-	TargetFile      = "file"
-	TargetHTML      = "html"
-	TargetWordPress = "wordpress"
-)
 
 // Load reads env vars, optionally seeded by a .env file (pass "" to skip).
 // A missing .env is fine; real env vars always win over .env values.
@@ -138,15 +114,11 @@ func Load(envPath string) (*Config, error) {
 	}
 	cfg.Publishing.DedupeWindow = dw
 
-	cfg.Target.Type = envStr("TARGET_TYPE")
-	cfg.Target.File.Path = envStr("TARGET_FILE_PATH")
-	cfg.Target.HTML.OutputDir = envStr("TARGET_HTML_OUTPUT_DIR")
-	cfg.Target.HTML.SiteTitle = envStr("TARGET_HTML_SITE_TITLE")
-	cfg.Target.WordPress.URL = envStr("TARGET_WORDPRESS_URL")
-	cfg.Target.WordPress.Username = envStr("TARGET_WORDPRESS_USERNAME")
-	cfg.Target.WordPress.AppPassword = envStr("TARGET_WORDPRESS_APP_PASSWORD")
-	cfg.Target.WordPress.PostType = envStr("TARGET_WORDPRESS_POST_TYPE")
-	cfg.Target.WordPress.Status = envStr("TARGET_WORDPRESS_STATUS")
+	cfg.WordPress.URL = envStr("TARGET_WORDPRESS_URL")
+	cfg.WordPress.Username = envStr("TARGET_WORDPRESS_USERNAME")
+	cfg.WordPress.AppPassword = envStr("TARGET_WORDPRESS_APP_PASSWORD")
+	cfg.WordPress.PostType = envStr("TARGET_WORDPRESS_POST_TYPE")
+	cfg.WordPress.Status = envStr("TARGET_WORDPRESS_STATUS")
 
 	cfg.Storage.SeenFile = envStr("STORAGE_SEEN_FILE")
 	cfg.Storage.ArchiveFile = envStr("STORAGE_ARCHIVE_FILE")
@@ -274,25 +246,11 @@ func (c *Config) applyDefaults() {
 	if c.Storage.ArchiveFile == "" {
 		c.Storage.ArchiveFile = filepath.Join("data", "messages.jsonl")
 	}
-	switch c.Target.Type {
-	case TargetFile:
-		if c.Target.File.Path == "" {
-			c.Target.File.Path = filepath.Join("data", "published.jsonl")
-		}
-	case TargetHTML:
-		if c.Target.HTML.OutputDir == "" {
-			c.Target.HTML.OutputDir = "site"
-		}
-		if c.Target.HTML.SiteTitle == "" {
-			c.Target.HTML.SiteTitle = "کانال " + c.Source.Channel
-		}
-	case TargetWordPress:
-		if c.Target.WordPress.PostType == "" {
-			c.Target.WordPress.PostType = "post"
-		}
-		if c.Target.WordPress.Status == "" {
-			c.Target.WordPress.Status = "draft"
-		}
+	if c.WordPress.PostType == "" {
+		c.WordPress.PostType = "post"
+	}
+	if c.WordPress.Status == "" {
+		c.WordPress.Status = "draft"
 	}
 }
 
@@ -321,29 +279,14 @@ func (c *Config) validate() error {
 			return errors.New("EITAA_BRIDGE_PUBLISHING_DEFAULT_CATEGORY: slug|label both required")
 		}
 	}
-	switch c.Target.Type {
-	case TargetFile:
-		if c.Target.File.Path == "" {
-			return errors.New("EITAA_BRIDGE_TARGET_FILE_PATH is required for target type 'file'")
-		}
-	case TargetHTML:
-		if c.Target.HTML.OutputDir == "" {
-			return errors.New("EITAA_BRIDGE_TARGET_HTML_OUTPUT_DIR is required for target type 'html'")
-		}
-	case TargetWordPress:
-		if c.Target.WordPress.URL == "" {
-			return errors.New("EITAA_BRIDGE_TARGET_WORDPRESS_URL is required for target type 'wordpress'")
-		}
-		if _, err := url.Parse(c.Target.WordPress.URL); err != nil {
-			return fmt.Errorf("EITAA_BRIDGE_TARGET_WORDPRESS_URL invalid: %w", err)
-		}
-		if c.Target.WordPress.Username == "" || c.Target.WordPress.AppPassword == "" {
-			return errors.New("EITAA_BRIDGE_TARGET_WORDPRESS_USERNAME and _APP_PASSWORD are required")
-		}
-	case "":
-		return errors.New("EITAA_BRIDGE_TARGET_TYPE is required (one of: file, html, wordpress)")
-	default:
-		return fmt.Errorf("EITAA_BRIDGE_TARGET_TYPE %q is not supported (use: file, html, wordpress)", c.Target.Type)
+	if c.WordPress.URL == "" {
+		return errors.New("EITAA_BRIDGE_TARGET_WORDPRESS_URL is required")
+	}
+	if _, err := url.Parse(c.WordPress.URL); err != nil {
+		return fmt.Errorf("EITAA_BRIDGE_TARGET_WORDPRESS_URL invalid: %w", err)
+	}
+	if c.WordPress.Username == "" || c.WordPress.AppPassword == "" {
+		return errors.New("EITAA_BRIDGE_TARGET_WORDPRESS_USERNAME and _APP_PASSWORD are required")
 	}
 	return nil
 }

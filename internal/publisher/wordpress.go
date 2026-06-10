@@ -474,7 +474,7 @@ func extFromURL(u string) string {
 // ─── Content rendering ──────────────────────────────────────────────
 
 var (
-	vcColumnTextRe = regexp.MustCompile(`(?s)\[vc_column_text\].*?\[/vc_column_text\]`)
+	vcColumnTextRe  = regexp.MustCompile(`(?s)\[vc_column_text\].*?\[/vc_column_text\]`)
 	vcSingleImageRe = regexp.MustCompile(`(\[vc_single_image[^\]]*?image=")(\d+)(")`)
 	vcGalleryRe     = regexp.MustCompile(`\[vc_gallery([^\]]*?)images="([^"]*)"([^\]]*?)\]`)
 )

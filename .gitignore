@@ -14,9 +14,6 @@ coverage.out
 # Runtime state and archives
 /data
 
-# Generated static site (HTML publisher output)
-site/
-
 # IDE / OS
 .vscode/
 .idea/

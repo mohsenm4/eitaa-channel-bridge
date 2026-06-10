@@ -13,17 +13,16 @@ RUN CGO_ENABLED=0 GOOS=linux \
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata \
-    && mkdir -p /app/data /app/site
+    && mkdir -p /app/data
 
 COPY --from=builder /out/bridge /usr/local/bin/bridge
 
 WORKDIR /app
 
 ENV EITAA_BRIDGE_STORAGE_SEEN_FILE=/app/data/seen.json \
-    EITAA_BRIDGE_STORAGE_ARCHIVE_FILE=/app/data/messages.jsonl \
-    EITAA_BRIDGE_TARGET_HTML_OUTPUT_DIR=/app/site
+    EITAA_BRIDGE_STORAGE_ARCHIVE_FILE=/app/data/messages.jsonl
 
-VOLUME ["/app/data", "/app/site"]
+VOLUME ["/app/data"]
 
 ENTRYPOINT ["/usr/local/bin/bridge"]
 CMD ["run"]
