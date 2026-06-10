@@ -83,6 +83,68 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) (int, error)
 	return p.plainInsert(ctx, msg, catID, featuredID, slug, content)
 }
 
+// Update rewrites an existing WP post's title/content/category/featured-media to mirror an Eitaa edit.
+// Photos are re-uploaded (the WP media library dedupes by hash-slug so this is cheap if unchanged).
+func (p *WordPress) Update(ctx context.Context, postID int, msg router.Routed) error {
+	if postID <= 0 {
+		return fmt.Errorf("update: invalid postID %d", postID)
+	}
+	if msg.CategoryFa == "" {
+		return fmt.Errorf("update: routed message has no category label")
+	}
+	if err := p.loadCategories(ctx); err != nil {
+		return fmt.Errorf("update: load WP categories: %w", err)
+	}
+	catID, ok := p.catByName[msg.CategoryFa]
+	if !ok {
+		return fmt.Errorf("update: WP category %q not found", msg.CategoryFa)
+	}
+
+	featuredID, extraGalleryIDs := p.uploadAllPhotos(ctx, msg)
+	_, content := p.renderContent(ctx, msg, catID, featuredID)
+	if len(extraGalleryIDs) > 0 {
+		content = mergeOrInsertGallery(content, extraGalleryIDs)
+	}
+
+	payload := map[string]any{
+		"title":      msg.Title,
+		"content":    content,
+		"categories": []int{catID},
+	}
+	if featuredID != 0 {
+		payload["featured_media"] = featuredID
+	}
+	body, _ := json.Marshal(payload)
+	resp, err := p.do(ctx, http.MethodPost, fmt.Sprintf("/wp-json/wp/v2/posts/%d", postID), body)
+	if err != nil {
+		return fmt.Errorf("update post %d: %w", postID, err)
+	}
+	var out struct {
+		ID   int    `json:"id"`
+		Link string `json:"link"`
+	}
+	if err := json.Unmarshal(resp, &out); err != nil {
+		return fmt.Errorf("decode update response: %w (body: %s)", err, snippet(resp))
+	}
+	p.log.Info("wordpress: updated",
+		"eitaa_id", msg.ID, "wp_id", out.ID, "category", msg.CategoryFa,
+		"title", msg.Title, "featured_media", featuredID, "link", out.Link)
+	return nil
+}
+
+// Delete sends the post to trash (force=false). The author can restore from WP if it was a mistake.
+func (p *WordPress) Delete(ctx context.Context, postID int) error {
+	if postID <= 0 {
+		return fmt.Errorf("delete: invalid postID %d", postID)
+	}
+	_, err := p.do(ctx, http.MethodDelete, fmt.Sprintf("/wp-json/wp/v2/posts/%d", postID), nil)
+	if err != nil {
+		return fmt.Errorf("delete post %d: %w", postID, err)
+	}
+	p.log.Info("wordpress: deleted", "wp_id", postID)
+	return nil
+}
+
 func (p *WordPress) plainInsert(ctx context.Context, msg router.Routed, catID, featuredID int, slug, content string) (int, error) {
 	payload := map[string]any{
 		"title":      msg.Title,

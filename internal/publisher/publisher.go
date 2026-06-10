@@ -15,6 +15,10 @@ import (
 type Publisher interface {
 	Name() string
 	Publish(ctx context.Context, msg router.Routed) (postID int, err error)
+	// Update rewrites an already-published post with the new routed content (Eitaa-side edit sync).
+	Update(ctx context.Context, postID int, msg router.Routed) error
+	// Delete removes an already-published post (Eitaa-side deletion sync).
+	Delete(ctx context.Context, postID int) error
 	Close() error
 }
 

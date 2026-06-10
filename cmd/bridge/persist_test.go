@@ -22,8 +22,8 @@ type mockPub struct {
 	fail   bool
 }
 
-func (p *mockPub) Name() string  { return "mock" }
-func (p *mockPub) Close() error  { return nil }
+func (p *mockPub) Name() string { return "mock" }
+func (p *mockPub) Close() error { return nil }
 func (p *mockPub) Publish(context.Context, router.Routed) (int, error) {
 	if p.fail {
 		return 0, errors.New("simulated publish failure")
@@ -31,6 +31,8 @@ func (p *mockPub) Publish(context.Context, router.Routed) (int, error) {
 	p.nextID++
 	return p.nextID, nil
 }
+func (p *mockPub) Update(context.Context, int, router.Routed) error { return nil }
+func (p *mockPub) Delete(context.Context, int) error                { return nil }
 
 func newTestRunner(t *testing.T, pub *mockPub) (*runner, string) {
 	t.Helper()

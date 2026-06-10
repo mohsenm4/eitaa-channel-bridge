@@ -38,6 +38,27 @@ func (p *File) Publish(_ context.Context, msg router.Routed) (int, error) {
 	return 0, p.enc.Encode(msg)
 }
 
+// Update appends an "edited" marker — the file target is append-only, so true in-place edits aren't possible.
+func (p *File) Update(_ context.Context, postID int, msg router.Routed) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.enc.Encode(struct {
+		Edit   bool          `json:"edit"`
+		PostID int           `json:"post_id"`
+		Msg    router.Routed `json:"msg"`
+	}{true, postID, msg})
+}
+
+// Delete appends a "deleted" marker so a downstream consumer can replay the tombstone.
+func (p *File) Delete(_ context.Context, postID int) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.enc.Encode(struct {
+		Delete bool `json:"delete"`
+		PostID int  `json:"post_id"`
+	}{true, postID})
+}
+
 func (p *File) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
