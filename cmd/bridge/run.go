@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"flag"
 	"log/slog"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -158,10 +159,98 @@ func (r *runner) tick(ctx context.Context) {
 		r.log.Error("fetch failed", "err", err)
 		return
 	}
+	r.syncEditsAndDeletes(ctx, msgs)
 	// State is persisted per-message inside processOne; no end-of-tick save needed.
 	if n := r.processBatch(ctx, msgs); n == 0 {
 		r.log.Info("idle", "msg", "no new messages")
 	}
+}
+
+// syncEditsAndDeletes mirrors author actions in the source channel onto the WP target.
+// For each tracked message (PostID>0) whose ID is still inside the fetched page:
+//   - present in fetch with a different fingerprint → push an edit
+//   - absent from fetch → push a delete (one-shot, idempotent via Deleted flag)
+// Message age does NOT gate this check — EditWatchWindow only controls polling cadence.
+// Late edits / deletes made hours later are still mirrored on the next cold-mode tick.
+func (r *runner) syncEditsAndDeletes(ctx context.Context, msgs []eitaa.Message) {
+	if len(msgs) == 0 {
+		return
+	}
+	minID := msgs[0].ID
+	fetched := make(map[int]eitaa.Message, len(msgs))
+	for _, m := range msgs {
+		fetched[m.ID] = m
+		if m.ID < minID {
+			minID = m.ID
+		}
+	}
+
+	// Upper bound is unbounded: a deleted "latest" message is missing from the page but its ID > min(fetched),
+	// so we must still consider it. The lower bound is the oldest visible — anything older is off-page (can't tell).
+	tracked := r.store.TrackedInRange(r.cfg.Source.Channel, minID, math.MaxInt)
+	if len(tracked) == 0 {
+		return
+	}
+
+	for _, id := range tracked {
+		entry := r.store.Get(r.cfg.Source.Channel, id)
+		if m, ok := fetched[id]; ok {
+			r.maybeSyncEdit(ctx, m, entry)
+		} else {
+			r.syncDeletion(ctx, id, entry)
+		}
+	}
+}
+
+// maybeSyncEdit pushes an Update to the target when the fetched message's text fingerprint differs from the stored one.
+// Stored FP is updated only on success, so transient publisher failures get retried next tick.
+func (r *runner) maybeSyncEdit(ctx context.Context, m eitaa.Message, entry state.Entry) {
+	newFP := fingerprint(m.Text)
+	if entry.FP == newFP {
+		return
+	}
+	if entry.FP == "" {
+		// Pre-feature entries had no FP; seed silently rather than spam an edit on every tracked old message.
+		r.store.UpdateFP(r.cfg.Source.Channel, m.ID, newFP)
+		if err := r.store.Save(); err != nil {
+			r.log.Warn("state save failed after fp seed", "id", m.ID, "err", err)
+		}
+		return
+	}
+
+	routed := r.rt.Route(m)
+	// If the edit added a skip-hashtag, treat it as a deletion to keep WP in sync with author intent.
+	if ok, reason := publisher.ShouldPublish(r.cfg.Publishing, routed); !ok {
+		r.log.Info("edit converts message to non-publishable — deleting target",
+			"id", m.ID, "wp_id", entry.PostID, "reason", reason)
+		r.syncDeletion(ctx, m.ID, entry)
+		return
+	}
+	if err := r.pub.Update(ctx, entry.PostID, routed); err != nil {
+		r.log.Error("edit sync failed — will retry next tick",
+			"id", m.ID, "wp_id", entry.PostID, "err", err)
+		return
+	}
+	r.store.UpdateFP(r.cfg.Source.Channel, m.ID, newFP)
+	if err := r.store.Save(); err != nil {
+		r.log.Warn("state save failed after edit sync", "id", m.ID, "err", err)
+	}
+	r.log.Info("edit synced", "id", m.ID, "wp_id", entry.PostID,
+		"title", utils.DisplayTitle(routed.Title, 50))
+}
+
+// syncDeletion mirrors a source-side deletion to the target, then marks the entry so we don't retry forever.
+func (r *runner) syncDeletion(ctx context.Context, id int, entry state.Entry) {
+	if err := r.pub.Delete(ctx, entry.PostID); err != nil {
+		r.log.Error("deletion sync failed — will retry next tick",
+			"id", id, "wp_id", entry.PostID, "err", err)
+		return
+	}
+	r.store.MarkDeleted(r.cfg.Source.Channel, id)
+	if err := r.store.Save(); err != nil {
+		r.log.Warn("state save failed after deletion sync", "id", id, "err", err)
+	}
+	r.log.Info("deletion synced", "id", id, "wp_id", entry.PostID)
 }
 
 // backfill walks Eitaa's ?before= pagination backwards up to max older messages.
@@ -204,18 +293,35 @@ func (r *runner) Run(ctx context.Context) {
 	if r.store.Count(r.cfg.Source.Channel) == 0 && r.cfg.Source.BackfillMax > 0 {
 		r.backfill(ctx, r.cfg.Source.BackfillMax)
 	}
-	r.tick(ctx)
-	ticker := time.NewTicker(r.cfg.Source.PollInterval)
-	defer ticker.Stop()
 	for {
+		r.tick(ctx)
+		next := r.nextInterval()
+		r.log.Info("scheduled next tick", "in", next.String(), "mode", r.pollMode())
+		t := time.NewTimer(next)
 		select {
 		case <-ctx.Done():
+			t.Stop()
 			r.log.Info("stopping")
 			return
-		case <-ticker.C:
-			r.tick(ctx)
+		case <-t.C:
 		}
 	}
+}
+
+// nextInterval returns the hot interval while any tracked message is within EditWatchWindow, else the cold interval.
+func (r *runner) nextInterval() time.Duration {
+	latest := r.store.LatestTrackedTS(r.cfg.Source.Channel)
+	if !latest.IsZero() && time.Since(latest) < r.cfg.Source.EditWatchWindow {
+		return r.cfg.Source.HotPollInterval
+	}
+	return r.cfg.Source.PollInterval
+}
+
+func (r *runner) pollMode() string {
+	if r.nextInterval() == r.cfg.Source.HotPollInterval {
+		return "hot"
+	}
+	return "cold"
 }
 
 func runRun(log *slog.Logger, args []string) {
@@ -233,7 +339,9 @@ func runRun(log *slog.Logger, args []string) {
 	log.Info("starting",
 		"source", cfg.Source.Channel,
 		"target", r.pub.Name(),
-		"interval", cfg.Source.PollInterval.String(),
+		"cold_interval", cfg.Source.PollInterval.String(),
+		"hot_interval", cfg.Source.HotPollInterval.String(),
+		"edit_window", cfg.Source.EditWatchWindow.String(),
 		"backfill_max", cfg.Source.BackfillMax,
 		"categories", strings.Join(categoryTags(cfg.Publishing.Categories), ","),
 		"inbox", strings.Join(cfg.Publishing.InboxHashtags, ","),

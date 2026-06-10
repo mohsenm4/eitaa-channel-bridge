@@ -52,6 +52,27 @@ func (p *HTML) Publish(_ context.Context, msg router.Routed) (int, error) {
 	return 0, p.writePostsJSON()
 }
 
+// Update rewrites the in-memory entry keyed by the Eitaa msg ID; postID is unused for this target.
+func (p *HTML) Update(_ context.Context, _ int, msg router.Routed) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.posts[msg.ID] = msg
+	return p.writePostsJSON()
+}
+
+// Delete searches the in-memory map for a matching Eitaa ID via posts[*].ID; postID here is the Eitaa ID for HTML.
+func (p *HTML) Delete(_ context.Context, postID int) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for id := range p.posts {
+		if id == postID {
+			delete(p.posts, id)
+			return p.writePostsJSON()
+		}
+	}
+	return nil
+}
+
 func (p *HTML) Close() error { return nil }
 
 func (p *HTML) ensureAssets() error {

@@ -25,9 +25,14 @@ type Config struct {
 }
 
 type Source struct {
-	Channel      string
+	Channel string
+	// PollInterval is the cold-mode interval — used when no tracked message is recent enough for edits/deletes.
 	PollInterval time.Duration
-	BackfillMax  int
+	// HotPollInterval is the fast interval used while a tracked message is within EditWatchWindow.
+	HotPollInterval time.Duration
+	// EditWatchWindow: how long after a message is published to keep checking it for edits/deletes.
+	EditWatchWindow time.Duration
+	BackfillMax     int
 }
 
 type Publishing struct {
@@ -99,6 +104,16 @@ func Load(envPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Source.PollInterval = pi
+	hpi, err := envDuration("SOURCE_HOT_POLL_INTERVAL")
+	if err != nil {
+		return nil, err
+	}
+	cfg.Source.HotPollInterval = hpi
+	eww, err := envDuration("SOURCE_EDIT_WATCH_WINDOW")
+	if err != nil {
+		return nil, err
+	}
+	cfg.Source.EditWatchWindow = eww
 	bm, err := envInt("SOURCE_BACKFILL_MAX")
 	if err != nil {
 		return nil, err
@@ -242,7 +257,13 @@ func parseDefaultCategory(s string) (*Category, error) {
 
 func (c *Config) applyDefaults() {
 	if c.Source.PollInterval == 0 {
-		c.Source.PollInterval = 5 * time.Minute
+		c.Source.PollInterval = 6 * time.Hour
+	}
+	if c.Source.HotPollInterval == 0 {
+		c.Source.HotPollInterval = 10 * time.Second
+	}
+	if c.Source.EditWatchWindow == 0 {
+		c.Source.EditWatchWindow = 1 * time.Hour
 	}
 	if c.Publishing.DedupeWindow == 0 {
 		c.Publishing.DedupeWindow = 10 * time.Second
@@ -281,6 +302,13 @@ func (c *Config) validate() error {
 	}
 	if c.Source.PollInterval < 5*time.Second {
 		return fmt.Errorf("EITAA_BRIDGE_SOURCE_POLL_INTERVAL too small (%s): use at least 5s", c.Source.PollInterval)
+	}
+	if c.Source.HotPollInterval < 5*time.Second {
+		return fmt.Errorf("EITAA_BRIDGE_SOURCE_HOT_POLL_INTERVAL too small (%s): use at least 5s", c.Source.HotPollInterval)
+	}
+	if c.Source.EditWatchWindow < c.Source.HotPollInterval {
+		return fmt.Errorf("EITAA_BRIDGE_SOURCE_EDIT_WATCH_WINDOW (%s) must be >= HOT_POLL_INTERVAL (%s)",
+			c.Source.EditWatchWindow, c.Source.HotPollInterval)
 	}
 	for i, cat := range c.Publishing.Categories {
 		if cat.Hashtag == "" || cat.Slug == "" || cat.Label == "" {
