@@ -1,8 +1,12 @@
 package publisher
 
 import (
+	"context"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/config"
@@ -218,6 +222,94 @@ func TestApplyTemplate_PreservesExtraShortcodes(t *testing.T) {
 	}
 	if strings.Contains(got, "old body") {
 		t.Error("last block content should be replaced")
+	}
+}
+
+// TestPublish_AdoptsExistingPostWhenSlugAlreadyOnSite reproduces the lost-response
+// scenario from issue #23: a prior publish attempt created a post on WP, but its
+// HTTP response never reached us. On retry, Publish must find the existing post by
+// slug and return its ID instead of POSTing a second copy.
+func TestPublish_AdoptsExistingPostWhenSlugAlreadyOnSite(t *testing.T) {
+	const existingPostID = 20001
+	var postCreates atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/wp-json/wp/v2/posts") &&
+			r.URL.Query().Get("slug") != "":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`[{"id":20001}]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/wp-json/wp/v2/posts":
+			postCreates.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"id":99999,"link":"http://example.com/?p=99999"}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	wp := NewWordPress(config.WordPressTarget{
+		URL: srv.URL, Username: "u", AppPassword: "p", Status: "publish",
+	}, slog.Default())
+
+	got, err := wp.Publish(context.Background(), testRouted())
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if got != existingPostID {
+		t.Errorf("Publish returned %d, want %d (adopted existing post)", got, existingPostID)
+	}
+	if n := postCreates.Load(); n != 0 {
+		t.Errorf("expected zero POST /posts calls when adopting, got %d", n)
+	}
+}
+
+// TestPublish_ProceedsToInsertWhenSlugIsFree confirms the happy path: a fresh slug
+// returns an empty array from the lookup, and Publish proceeds to actually create
+// the post.
+func TestPublish_ProceedsToInsertWhenSlugIsFree(t *testing.T) {
+	var postCreates atomic.Int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/wp-json/wp/v2/posts") &&
+			r.URL.Query().Get("slug") != "":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`[]`))
+		case r.Method == http.MethodGet && r.URL.Path == "/wp-json/wp/v2/categories":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`[{"id":7,"name":"واحد قرض الحسنه","slug":"qarz-al-hasaneh"}]`))
+		case r.Method == http.MethodGet && r.URL.Path == "/wp-json/eitaa-bridge/v1":
+			http.NotFound(w, r)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/wp-json/wp/v2/posts"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`[]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/wp-json/wp/v2/posts":
+			postCreates.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"id":12345,"link":"http://example.com/?p=12345"}`))
+		default:
+			t.Logf("unexpected request: %s %s", r.Method, r.URL.String())
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	wp := NewWordPress(config.WordPressTarget{
+		URL: srv.URL, Username: "u", AppPassword: "p", Status: "publish",
+	}, slog.Default())
+
+	got, err := wp.Publish(context.Background(), testRouted())
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if got != 12345 {
+		t.Errorf("Publish returned %d, want 12345 (newly-created post)", got)
+	}
+	if n := postCreates.Load(); n != 1 {
+		t.Errorf("expected exactly 1 POST /posts call, got %d", n)
 	}
 }
 
