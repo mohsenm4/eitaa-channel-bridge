@@ -51,6 +51,21 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) (int, error)
 	if msg.CategoryFa == "" {
 		return 0, fmt.Errorf("routed message has no category label")
 	}
+
+	// A post with this slug already on the site means a prior publish attempt landed
+	// but its HTTP response was lost in flight (network blip, read timeout). Adopt
+	// that post instead of creating a second one. Slug is deterministic from category
+	// + eitaa ID, so a hit here can only be from a previous attempt for this message.
+	slug := buildPostSlug(msg)
+	if existingID, err := p.findPostBySlug(ctx, slug); err != nil {
+		p.log.Warn("wordpress: slug lookup failed, proceeding with publish",
+			"slug", slug, "err", err)
+	} else if existingID > 0 {
+		p.log.Info("wordpress: adopting existing post — likely a prior publish whose response was lost",
+			"eitaa_id", msg.ID, "wp_id", existingID, "slug", slug, "category", msg.CategoryFa)
+		return existingID, nil
+	}
+
 	if err := p.loadCategories(ctx); err != nil {
 		return 0, fmt.Errorf("load WP categories: %w", err)
 	}
@@ -64,7 +79,6 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) (int, error)
 	if len(extraGalleryIDs) > 0 {
 		content = mergeOrInsertGallery(content, extraGalleryIDs)
 	}
-	slug := buildPostSlug(msg)
 
 	// Preferred: clone via helper plugin so post_meta (WPBakery, theme layout) tags along.
 	if sourceID > 0 && p.useHelper(ctx) {
@@ -237,6 +251,30 @@ func (p *WordPress) cloneViaHelper(ctx context.Context, sourceID int, title, con
 		return 0, "", fmt.Errorf("clone-post returned no id (body: %s)", snippet(resp))
 	}
 	return out.ID, out.Link, nil
+}
+
+// findPostBySlug returns the ID of a post with the exact given slug, across all
+// non-trash statuses. Used by Publish to detect a prior attempt whose HTTP response
+// was lost. Returns 0 when no match.
+func (p *WordPress) findPostBySlug(ctx context.Context, slug string) (int, error) {
+	if slug == "" {
+		return 0, nil
+	}
+	path := fmt.Sprintf("/wp-json/wp/v2/posts?slug=%s&status=any&per_page=1", url.QueryEscape(slug))
+	body, err := p.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return 0, err
+	}
+	var items []struct {
+		ID int `json:"id"`
+	}
+	if err := json.Unmarshal(body, &items); err != nil {
+		return 0, fmt.Errorf("decode post search: %w (body: %s)", err, snippet(body))
+	}
+	if len(items) == 0 {
+		return 0, nil
+	}
+	return items[0].ID, nil
 }
 
 // buildPostSlug returns "{category}-{eitaa-id}" so WP doesn't derive an ugly Persian-encoded slug.
