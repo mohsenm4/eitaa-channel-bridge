@@ -168,7 +168,7 @@ func (r *runner) tick(ctx context.Context) {
 //   - present in fetch with a different fingerprint → push an edit
 //   - absent from fetch → push a delete (one-shot, idempotent via Deleted flag)
 //
-// Message age does NOT gate this check — EditWatchWindow only controls polling cadence.
+// Message age does NOT gate this check — EditWindow only controls polling cadence.
 // Late edits / deletes made hours later are still mirrored on the next cold-mode tick.
 func (r *runner) syncEditsAndDeletes(ctx context.Context, msgs []eitaa.Message) {
 	if len(msgs) == 0 {
@@ -307,17 +307,17 @@ func (r *runner) Run(ctx context.Context) {
 	}
 }
 
-// nextInterval returns the hot interval while any tracked message is within EditWatchWindow, else the cold interval.
+// nextInterval returns the hot interval while any tracked message is within EditWindow, else the cold interval.
 func (r *runner) nextInterval() time.Duration {
 	latest := r.store.LatestTrackedTS(r.cfg.Source.Channel)
-	if !latest.IsZero() && time.Since(latest) < r.cfg.Source.EditWatchWindow {
-		return r.cfg.Source.HotPollInterval
+	if !latest.IsZero() && time.Since(latest) < r.cfg.Source.EditWindow {
+		return r.cfg.Source.PollHot
 	}
-	return r.cfg.Source.PollInterval
+	return r.cfg.Source.PollCold
 }
 
 func (r *runner) pollMode() string {
-	if r.nextInterval() == r.cfg.Source.HotPollInterval {
+	if r.nextInterval() == r.cfg.Source.PollHot {
 		return "hot"
 	}
 	return "cold"
@@ -338,9 +338,9 @@ func runRun(log *slog.Logger, args []string) {
 	log.Info("starting",
 		"source", cfg.Source.Channel,
 		"target", r.pub.Name(),
-		"cold_interval", cfg.Source.PollInterval.String(),
-		"hot_interval", cfg.Source.HotPollInterval.String(),
-		"edit_window", cfg.Source.EditWatchWindow.String(),
+		"poll_cold", cfg.Source.PollCold.String(),
+		"poll_hot", cfg.Source.PollHot.String(),
+		"edit_window", cfg.Source.EditWindow.String(),
 		"backfill_max", cfg.Source.BackfillMax,
 		"categories", strings.Join(categoryTags(cfg.Publishing.Categories), ","),
 		"inbox", strings.Join(cfg.Publishing.InboxHashtags, ","),

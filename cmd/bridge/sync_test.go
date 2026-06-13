@@ -49,7 +49,7 @@ func newSyncRunner(t *testing.T) (*runner, *recPub) {
 	pub := &recPub{}
 	r, _ := newTestRunner(t, &mockPub{})
 	r.pub = pub
-	r.cfg.Source.EditWatchWindow = time.Hour
+	r.cfg.Source.EditWindow = time.Hour
 	return r, pub
 }
 
@@ -104,11 +104,11 @@ func TestSyncDelete_PushesDeleteWhenMissing(t *testing.T) {
 	}
 }
 
-// Late edits (past EditWatchWindow) are still mirrored — the window only controls polling rate,
+// Late edits (past EditWindow) are still mirrored — the window only controls polling rate,
 // not whether sync runs. Without this, a delete-then-edit at hour 7 would never reach WP.
 func TestSyncEdit_LateEditStillApplied(t *testing.T) {
 	r, pub := newSyncRunner(t)
-	r.cfg.Source.EditWatchWindow = time.Minute
+	r.cfg.Source.EditWindow = time.Minute
 
 	old := eitaa.Message{
 		ID: 100, Channel: "test",
@@ -125,11 +125,11 @@ func TestSyncEdit_LateEditStillApplied(t *testing.T) {
 	}
 }
 
-// Late deletions (past EditWatchWindow) must also still be propagated — Mohsen explicitly wants
+// Late deletions (past EditWindow) must also still be propagated — Mohsen explicitly wants
 // the next cold-mode tick to catch deletions made hours after the message was posted.
 func TestSyncDelete_LateDeletionStillApplied(t *testing.T) {
 	r, pub := newSyncRunner(t)
-	r.cfg.Source.EditWatchWindow = time.Minute
+	r.cfg.Source.EditWindow = time.Minute
 
 	old := eitaa.Message{
 		ID: 100, Channel: "test",
@@ -152,8 +152,8 @@ func TestSyncDelete_LateDeletionStillApplied(t *testing.T) {
 
 func TestNextInterval_HotWhenRecent(t *testing.T) {
 	r, _ := newSyncRunner(t)
-	r.cfg.Source.HotPollInterval = 10 * time.Second
-	r.cfg.Source.PollInterval = 6 * time.Hour
+	r.cfg.Source.PollHot = 10 * time.Second
+	r.cfg.Source.PollCold = 6 * time.Hour
 
 	recent := eitaa.Message{ID: 1, Channel: "test", Text: "📌 hi\n\n#test", Date: time.Now()}
 	r.processOne(context.Background(), recent)
@@ -165,9 +165,9 @@ func TestNextInterval_HotWhenRecent(t *testing.T) {
 
 func TestNextInterval_ColdWhenStale(t *testing.T) {
 	r, _ := newSyncRunner(t)
-	r.cfg.Source.HotPollInterval = 10 * time.Second
-	r.cfg.Source.PollInterval = 6 * time.Hour
-	r.cfg.Source.EditWatchWindow = time.Hour
+	r.cfg.Source.PollHot = 10 * time.Second
+	r.cfg.Source.PollCold = 6 * time.Hour
+	r.cfg.Source.EditWindow = time.Hour
 
 	old := eitaa.Message{
 		ID: 1, Channel: "test",

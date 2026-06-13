@@ -8,7 +8,7 @@ import (
 )
 
 // LogLevelEnv is the env var read by NewLogger (debug|info|warn|error).
-const LogLevelEnv = "EITAA_BRIDGE_LOG_LEVEL"
+const LogLevelEnv = "LOG_LEVEL"
 
 func NewLogger() *slog.Logger {
 	level := slog.LevelInfo

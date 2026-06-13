@@ -13,8 +13,6 @@ import (
 	"github.com/joho/godotenv"
 )
 
-const EnvPrefix = "EITAA_BRIDGE"
-
 const DefaultEnvPath = ".env"
 
 type Config struct {
@@ -26,13 +24,13 @@ type Config struct {
 
 type Source struct {
 	Channel string
-	// PollInterval is the cold-mode interval — used when no tracked message is recent enough for edits/deletes.
-	PollInterval time.Duration
-	// HotPollInterval is the fast interval used while a tracked message is within EditWatchWindow.
-	HotPollInterval time.Duration
-	// EditWatchWindow: how long after a message is published to keep checking it for edits/deletes.
-	EditWatchWindow time.Duration
-	BackfillMax     int
+	// PollCold is the cold-mode interval — used when no tracked message is recent enough for edits/deletes.
+	PollCold time.Duration
+	// PollHot is the fast interval used while a tracked message is within EditWindow.
+	PollHot time.Duration
+	// EditWindow: how long after a message is published to keep polling fast for edits/deletes.
+	EditWindow  time.Duration
+	BackfillMax int
 	// HealthcheckURL: if set, the bridge pings this URL on start and then every HealthcheckInterval so an
 	// external dead-man's-switch service (e.g. healthchecks.io) can alert when the bridge falls silent.
 	// Empty disables the feature.
@@ -81,60 +79,60 @@ func Load(envPath string) (*Config, error) {
 
 	var cfg Config
 
-	cfg.Source.Channel = strings.TrimPrefix(envStr("SOURCE_CHANNEL"), "@")
-	pi, err := envDuration("SOURCE_POLL_INTERVAL")
+	cfg.Source.Channel = strings.TrimPrefix(envStr("EITAA_CHANNEL"), "@")
+	pc, err := envDuration("POLL_COLD")
 	if err != nil {
 		return nil, err
 	}
-	cfg.Source.PollInterval = pi
-	hpi, err := envDuration("SOURCE_HOT_POLL_INTERVAL")
+	cfg.Source.PollCold = pc
+	ph, err := envDuration("POLL_HOT")
 	if err != nil {
 		return nil, err
 	}
-	cfg.Source.HotPollInterval = hpi
-	eww, err := envDuration("SOURCE_EDIT_WATCH_WINDOW")
+	cfg.Source.PollHot = ph
+	ew, err := envDuration("EDIT_WINDOW")
 	if err != nil {
 		return nil, err
 	}
-	cfg.Source.EditWatchWindow = eww
-	bm, err := envInt("SOURCE_BACKFILL_MAX")
+	cfg.Source.EditWindow = ew
+	bm, err := envInt("BACKFILL")
 	if err != nil {
 		return nil, err
 	}
 	cfg.Source.BackfillMax = bm
-	cfg.Source.HealthcheckURL = envStr("SOURCE_HEALTHCHECK_URL")
-	hi, err := envDuration("SOURCE_HEALTHCHECK_INTERVAL")
+	cfg.Source.HealthcheckURL = envStr("HEALTHCHECK_URL")
+	hi, err := envDuration("HEALTHCHECK_INTERVAL")
 	if err != nil {
 		return nil, err
 	}
 	cfg.Source.HealthcheckInterval = hi
 
-	cats, err := parseCategories(envStr("PUBLISHING_CATEGORIES"))
+	cats, err := parseCategories(envStr("CATEGORIES"))
 	if err != nil {
 		return nil, err
 	}
 	cfg.Publishing.Categories = cats
-	def, err := parseDefaultCategory(envStr("PUBLISHING_DEFAULT_CATEGORY"))
+	def, err := parseDefaultCategory(envStr("DEFAULT_CATEGORY"))
 	if err != nil {
 		return nil, err
 	}
 	cfg.Publishing.Default = def
-	cfg.Publishing.SkipHashtags = parseCommaList(envStr("PUBLISHING_SKIP_HASHTAGS"))
-	cfg.Publishing.InboxHashtags = parseCommaList(envStr("PUBLISHING_INBOX_HASHTAGS"))
-	dw, err := envDuration("PUBLISHING_DEDUPE_WINDOW")
+	cfg.Publishing.SkipHashtags = parseCommaList(envStr("SKIP_HASHTAGS"))
+	cfg.Publishing.InboxHashtags = parseCommaList(envStr("INBOX_HASHTAGS"))
+	dw, err := envDuration("DEDUPE_WINDOW")
 	if err != nil {
 		return nil, err
 	}
 	cfg.Publishing.DedupeWindow = dw
 
-	cfg.WordPress.URL = envStr("TARGET_WORDPRESS_URL")
-	cfg.WordPress.Username = envStr("TARGET_WORDPRESS_USERNAME")
-	cfg.WordPress.AppPassword = envStr("TARGET_WORDPRESS_APP_PASSWORD")
-	cfg.WordPress.PostType = envStr("TARGET_WORDPRESS_POST_TYPE")
-	cfg.WordPress.Status = envStr("TARGET_WORDPRESS_STATUS")
+	cfg.WordPress.URL = envStr("WP_URL")
+	cfg.WordPress.Username = envStr("WP_USER")
+	cfg.WordPress.AppPassword = envStr("WP_APP_PASSWORD")
+	cfg.WordPress.PostType = envStr("WP_POST_TYPE")
+	cfg.WordPress.Status = envStr("WP_STATUS")
 
-	cfg.Storage.SeenFile = envStr("STORAGE_SEEN_FILE")
-	cfg.Storage.ArchiveFile = envStr("STORAGE_ARCHIVE_FILE")
+	cfg.Storage.SeenFile = envStr("SEEN_FILE")
+	cfg.Storage.ArchiveFile = envStr("ARCHIVE_FILE")
 
 	cfg.applyDefaults()
 	if err := cfg.validate(); err != nil {
@@ -151,14 +149,14 @@ func MustLoad(envPath string) *Config {
 	cfg, err := Load(envPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: config: %v\n", err)
-		fmt.Fprintln(os.Stderr, "hint: copy .env.example to .env, or set EITAA_BRIDGE_* variables directly.")
+		fmt.Fprintln(os.Stderr, "hint: copy .env.example to .env, then fill in your values.")
 		os.Exit(1)
 	}
 	return cfg
 }
 
 func envStr(key string) string {
-	return strings.TrimSpace(os.Getenv(EnvPrefix + "_" + key))
+	return strings.TrimSpace(os.Getenv(key))
 }
 
 func envInt(key string) (int, error) {
@@ -168,7 +166,7 @@ func envInt(key string) (int, error) {
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil {
-		return 0, fmt.Errorf("%s_%s: %w", EnvPrefix, key, err)
+		return 0, fmt.Errorf("%s: %w", key, err)
 	}
 	return n, nil
 }
@@ -180,7 +178,7 @@ func envDuration(key string) (time.Duration, error) {
 	}
 	d, err := time.ParseDuration(s)
 	if err != nil {
-		return 0, fmt.Errorf("%s_%s: %w", EnvPrefix, key, err)
+		return 0, fmt.Errorf("%s: %w", key, err)
 	}
 	return d, nil
 }
@@ -214,7 +212,7 @@ func parseCategories(s string) ([]Category, error) {
 		fields := strings.Split(p, "|")
 		if len(fields) != 3 {
 			return nil, fmt.Errorf(
-				"EITAA_BRIDGE_PUBLISHING_CATEGORIES entry %d (%q): expected \"hashtag|slug|label\"", i, p)
+				"CATEGORIES entry %d (%q): expected \"hashtag|slug|label\"", i, p)
 		}
 		out = append(out, Category{
 			Hashtag: strings.TrimPrefix(strings.TrimSpace(fields[0]), "#"),
@@ -232,7 +230,7 @@ func parseDefaultCategory(s string) (*Category, error) {
 	fields := strings.Split(s, "|")
 	if len(fields) != 2 {
 		return nil, fmt.Errorf(
-			"EITAA_BRIDGE_PUBLISHING_DEFAULT_CATEGORY (%q): expected \"slug|label\"", s)
+			"DEFAULT_CATEGORY (%q): expected \"slug|label\"", s)
 	}
 	return &Category{
 		Slug:  strings.TrimSpace(fields[0]),
@@ -241,14 +239,14 @@ func parseDefaultCategory(s string) (*Category, error) {
 }
 
 func (c *Config) applyDefaults() {
-	if c.Source.PollInterval == 0 {
-		c.Source.PollInterval = 6 * time.Hour
+	if c.Source.PollCold == 0 {
+		c.Source.PollCold = 6 * time.Hour
 	}
-	if c.Source.HotPollInterval == 0 {
-		c.Source.HotPollInterval = 10 * time.Second
+	if c.Source.PollHot == 0 {
+		c.Source.PollHot = 10 * time.Second
 	}
-	if c.Source.EditWatchWindow == 0 {
-		c.Source.EditWatchWindow = 1 * time.Hour
+	if c.Source.EditWindow == 0 {
+		c.Source.EditWindow = 1 * time.Hour
 	}
 	if c.Source.HealthcheckInterval == 0 {
 		c.Source.HealthcheckInterval = 12 * time.Minute
@@ -272,45 +270,51 @@ func (c *Config) applyDefaults() {
 
 func (c *Config) validate() error {
 	if c.Source.Channel == "" {
-		return errors.New("EITAA_BRIDGE_SOURCE_CHANNEL is required")
+		return errors.New("EITAA_CHANNEL is required")
 	}
-	if c.Source.PollInterval < 5*time.Second {
-		return fmt.Errorf("EITAA_BRIDGE_SOURCE_POLL_INTERVAL too small (%s): use at least 5s", c.Source.PollInterval)
+	if c.Source.PollCold < 5*time.Second {
+		return fmt.Errorf("POLL_COLD too small (%s): use at least 5s", c.Source.PollCold)
 	}
-	if c.Source.HotPollInterval < 5*time.Second {
-		return fmt.Errorf("EITAA_BRIDGE_SOURCE_HOT_POLL_INTERVAL too small (%s): use at least 5s", c.Source.HotPollInterval)
+	if c.Source.PollHot < 5*time.Second {
+		return fmt.Errorf("POLL_HOT too small (%s): use at least 5s", c.Source.PollHot)
 	}
-	if c.Source.EditWatchWindow < c.Source.HotPollInterval {
-		return fmt.Errorf("EITAA_BRIDGE_SOURCE_EDIT_WATCH_WINDOW (%s) must be >= HOT_POLL_INTERVAL (%s)",
-			c.Source.EditWatchWindow, c.Source.HotPollInterval)
+	if c.Source.EditWindow < c.Source.PollHot {
+		return fmt.Errorf("EDIT_WINDOW (%s) must be >= POLL_HOT (%s)",
+			c.Source.EditWindow, c.Source.PollHot)
+	}
+	if c.Source.EditWindow < c.Source.PollCold {
+		fmt.Fprintf(os.Stderr,
+			"warning: EDIT_WINDOW (%s) is shorter than POLL_COLD (%s) — hot mode will rarely activate "+
+				"because messages age past the window before the next cold poll sees them.\n",
+			c.Source.EditWindow, c.Source.PollCold)
 	}
 	if c.Source.HealthcheckURL != "" {
 		if _, err := url.Parse(c.Source.HealthcheckURL); err != nil {
-			return fmt.Errorf("EITAA_BRIDGE_SOURCE_HEALTHCHECK_URL invalid: %w", err)
+			return fmt.Errorf("HEALTHCHECK_URL invalid: %w", err)
 		}
 		if c.Source.HealthcheckInterval < 30*time.Second {
-			return fmt.Errorf("EITAA_BRIDGE_SOURCE_HEALTHCHECK_INTERVAL too small (%s): use at least 30s", c.Source.HealthcheckInterval)
+			return fmt.Errorf("HEALTHCHECK_INTERVAL too small (%s): use at least 30s", c.Source.HealthcheckInterval)
 		}
 	}
 	for i, cat := range c.Publishing.Categories {
 		if cat.Hashtag == "" || cat.Slug == "" || cat.Label == "" {
-			return fmt.Errorf("EITAA_BRIDGE_PUBLISHING_CATEGORIES[%d]: each entry needs hashtag|slug|label", i)
+			return fmt.Errorf("CATEGORIES[%d]: each entry needs hashtag|slug|label", i)
 		}
 	}
 	if c.Publishing.Default != nil {
 		d := c.Publishing.Default
 		if d.Slug == "" || d.Label == "" {
-			return errors.New("EITAA_BRIDGE_PUBLISHING_DEFAULT_CATEGORY: slug|label both required")
+			return errors.New("DEFAULT_CATEGORY: slug|label both required")
 		}
 	}
 	if c.WordPress.URL == "" {
-		return errors.New("EITAA_BRIDGE_TARGET_WORDPRESS_URL is required")
+		return errors.New("WP_URL is required")
 	}
 	if _, err := url.Parse(c.WordPress.URL); err != nil {
-		return fmt.Errorf("EITAA_BRIDGE_TARGET_WORDPRESS_URL invalid: %w", err)
+		return fmt.Errorf("WP_URL invalid: %w", err)
 	}
 	if c.WordPress.Username == "" || c.WordPress.AppPassword == "" {
-		return errors.New("EITAA_BRIDGE_TARGET_WORDPRESS_USERNAME and _APP_PASSWORD are required")
+		return errors.New("WP_USER and WP_APP_PASSWORD are required")
 	}
 	return nil
 }

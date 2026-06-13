@@ -41,20 +41,20 @@ usage:
 dump   fetches the channel once and writes raw HTML + routed JSON
        under the storage directory. Shows which posts WOULD be
        published. No side effects on the target.
-run    polls the channel on EITAA_BRIDGE_SOURCE_POLL_INTERVAL.
-       For each new message, it classifies, filters by publishing
-       rules, and publishes via the configured target. On the first
-       run (empty seen-set) it walks Eitaa's ?before= pagination up to
-       EITAA_BRIDGE_SOURCE_BACKFILL_MAX older messages.
+run    polls the channel on POLL_COLD (slow) and POLL_HOT (fast,
+       while a recent message is still inside EDIT_WINDOW). For each
+       new message, it classifies, filters by publishing rules, and
+       publishes via the configured target. On the first run (empty
+       seen-set) it walks Eitaa's ?before= pagination up to BACKFILL
+       older messages.
 
 flags:
   --env  path to .env file (default: .env, optional — missing is OK)
 
 env:
-  Every config value is an EITAA_BRIDGE_* environment variable. Real
-  env vars always override the .env file. See .env.example for the
-  full schema.
+  Real env vars always override values in .env. See .env.example for
+  the full list with defaults and inline docs.
 
-  EITAA_BRIDGE_LOG_LEVEL   debug|info|warn|error (default: info)
+  LOG_LEVEL   debug|info|warn|error (default: info)
 `)
 }

@@ -19,8 +19,8 @@ COPY --from=builder /out/bridge /usr/local/bin/bridge
 
 WORKDIR /app
 
-ENV EITAA_BRIDGE_STORAGE_SEEN_FILE=/app/data/seen.json \
-    EITAA_BRIDGE_STORAGE_ARCHIVE_FILE=/app/data/messages.jsonl
+ENV SEEN_FILE=/app/data/seen.json \
+    ARCHIVE_FILE=/app/data/messages.jsonl
 
 VOLUME ["/app/data"]
 
