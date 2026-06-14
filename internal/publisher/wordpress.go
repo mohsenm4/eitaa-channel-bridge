@@ -600,10 +600,16 @@ func (p *WordPress) renderHTML(msg router.Routed) string {
 	return wrapVCRow(p.renderBodyLines(msg))
 }
 
-// renderBodyLines emits a <p> per content line, stripping markers, hashtag lines,
-// and everything that follows them. Channel admins put the routing hashtags at the
-// END of the message, followed by a sign-off block (channel name, link). We treat
-// the first hashtag-only line as the boundary: it AND everything after it are dropped.
+// renderBodyLines emits a <p> per content line, stripping markers, hashtag
+// lines, and the channel sign-off block. Channel admins use two conventions:
+//
+//   1. Sign-off AFTER hashtags  → the "break on first hashtag-only line"
+//      below catches the signature block in one shot.
+//   2. Sign-off BEFORE hashtags → handled by isChannelSignatureLine, which
+//      drops the 🟢-prefixed channel-name line, the 🆔-prefixed URL line,
+//      and anything containing "eitaa.com/" (the canonical invite link).
+//
+// Either way, the published post never carries the channel signature.
 func (p *WordPress) renderBodyLines(msg router.Routed) string {
 	var inner strings.Builder
 	if msg.EventDate != "" {
@@ -623,6 +629,9 @@ func (p *WordPress) renderBodyLines(msg router.Routed) string {
 		if line == "" {
 			continue
 		}
+		if isChannelSignatureLine(line) {
+			continue
+		}
 		if isHashtagOnlyLine(line) {
 			break
 		}
@@ -631,6 +640,27 @@ func (p *WordPress) renderBodyLines(msg router.Routed) string {
 		inner.WriteString("</p>\n")
 	}
 	return inner.String()
+}
+
+// isChannelSignatureLine returns true for lines that look like the Eitaa
+// channel sign-off footer admins paste at the bottom of messages. Catches:
+//
+//   🟢 کانال رسمی <name>           ← green-dot channel-name line
+//   🆔 https://eitaa.com/<slug>    ← id-square invite-link line
+//
+// plus any line containing an eitaa.com/ URL, which covers handwritten
+// variants without the emoji prefix.
+func isChannelSignatureLine(line string) bool {
+	if line == "" {
+		return false
+	}
+	if strings.HasPrefix(line, "🟢") || strings.HasPrefix(line, "🆔") {
+		return true
+	}
+	if strings.Contains(line, "eitaa.com/") {
+		return true
+	}
+	return false
 }
 
 func wrapVCRow(html string) string {
