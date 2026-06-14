@@ -600,7 +600,10 @@ func (p *WordPress) renderHTML(msg router.Routed) string {
 	return wrapVCRow(p.renderBodyLines(msg))
 }
 
-// renderBodyLines emits a <p> per content line, stripping markers and hashtag-only lines.
+// renderBodyLines emits a <p> per content line, stripping markers, hashtag lines,
+// and everything that follows them. Channel admins put the routing hashtags at the
+// END of the message, followed by a sign-off block (channel name, link). We treat
+// the first hashtag-only line as the boundary: it AND everything after it are dropped.
 func (p *WordPress) renderBodyLines(msg router.Routed) string {
 	var inner strings.Builder
 	if msg.EventDate != "" {
@@ -617,8 +620,11 @@ func (p *WordPress) renderBodyLines(msg router.Routed) string {
 			continue
 		}
 		line = strings.TrimSpace(strings.TrimPrefix(line, router.BodyMarker))
-		if line == "" || isHashtagOnlyLine(line) {
+		if line == "" {
 			continue
+		}
+		if isHashtagOnlyLine(line) {
+			break
 		}
 		inner.WriteString("<p>")
 		inner.WriteString(htmlEscape(line))

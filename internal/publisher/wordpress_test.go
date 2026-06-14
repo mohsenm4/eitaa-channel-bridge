@@ -179,6 +179,34 @@ func TestRenderHTML_FallbackWrap(t *testing.T) {
 	}
 }
 
+// TestRenderBodyLines_StopsAtHashtagBlock guards against republishing the
+// channel sign-off (name + invite link) that admins paste after the routing
+// hashtags. Once we hit the first hashtag-only line, everything from there
+// onward must be dropped.
+func TestRenderBodyLines_StopsAtHashtagBlock(t *testing.T) {
+	r := router.Routed{
+		Message: eitaa.Message{
+			Channel: "tesssst",
+			ID:      9,
+			Text: "📌 گزارش\n📝\nمحتوای اصلی\n#قرض_الحسنه\n" +
+				"🟢 کانال رسمی موسسه خدمات اجتماعی فاطمیون\n" +
+				"🆔 https://eitaa.com/fatemyoon_in",
+		},
+		Title:    "گزارش",
+		Hashtags: []string{"قرض_الحسنه"},
+	}
+	got := testWP().renderBodyLines(r)
+
+	if !strings.Contains(got, "محتوای اصلی") {
+		t.Error("body line before the hashtag block was lost")
+	}
+	for _, banned := range []string{"کانال رسمی", "eitaa.com/fatemyoon_in", "🆔", "🟢", "#قرض_الحسنه"} {
+		if strings.Contains(got, banned) {
+			t.Errorf("expected %q to be dropped, got:\n%s", banned, got)
+		}
+	}
+}
+
 // TestApplyTemplate_SingleBlockClonesStructure covers the "روضه خانگی"
 // style template — a single [vc_column_text] block. The whole outer
 // structure must be preserved and only the body content replaced.
