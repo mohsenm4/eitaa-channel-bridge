@@ -5,6 +5,9 @@ dist/
 *.test
 *.out
 coverage.out
+# Bare compiled commands when built without -o bin/
+/bridge
+/wp-page
 
 # Secrets (.env.example is tracked)
 .env
