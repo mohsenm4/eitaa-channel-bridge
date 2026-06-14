@@ -22,6 +22,8 @@ func main() {
 		runDump(log, os.Args[2:])
 	case "run":
 		runRun(log, os.Args[2:])
+	case "seed":
+		runSeed(log, os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -36,11 +38,17 @@ func usage() {
 
 usage:
   bridge dump  [--env PATH]
+  bridge seed  [--env PATH]
   bridge run   [--env PATH]
 
 dump   fetches the channel once and writes raw HTML + routed JSON
        under the storage directory. Shows which posts WOULD be
        published. No side effects on the target.
+seed   marks every currently-visible message on the channel as
+       already-seen, WITHOUT publishing. Use on a fresh install (or
+       after deleting seen.json) when you want the bridge to ignore
+       everything posted before now. BACKFILL=0 alone does NOT do
+       this — the first tick still treats the visible page as new.
 run    polls the channel on POLL_COLD (slow) and POLL_HOT (fast,
        while a recent message is still inside EDIT_WINDOW). For each
        new message, it classifies, filters by publishing rules, and
