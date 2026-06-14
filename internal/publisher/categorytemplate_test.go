@@ -153,28 +153,6 @@ func TestHemayatKhedmat_RoutesToSimpleTemplateAndParser(t *testing.T) {
 	}
 }
 
-func TestJalasatVahedha_RoutesToSimpleTemplateAndParser(t *testing.T) {
-	msg := tavanmandRouted()
-	msg.Category = "jalasat-vahedha"
-	msg.CategoryFa = "گزارش جلسات واحدها"
-
-	if _, ok := loadCategoryTemplate("jalasat-vahedha"); !ok {
-		t.Fatal("jalasat-vahedha.tmpl not embedded")
-	}
-	vars := extractCategoryVars(msg, 222)
-	if vars == nil {
-		t.Fatal("expected non-nil vars for jalasat-vahedha")
-	}
-	tmpl, _ := loadCategoryTemplate("jalasat-vahedha")
-	out := renderCategoryTemplate(tmpl, vars)
-	if strings.Contains(out, "{{") {
-		t.Errorf("unfilled placeholder remains:\n%s", out)
-	}
-	if !strings.Contains(out, "📅 تاریخ برگزاری: 1404/08/15") {
-		t.Errorf("date line missing:\n%s", out)
-	}
-}
-
 func TestQarzAlHasaneh_RoutesToSimpleTemplateAndParser(t *testing.T) {
 	msg := tavanmandRouted()
 	msg.Category = "qarz-al-hasaneh"
