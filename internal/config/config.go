@@ -36,6 +36,8 @@ type Source struct {
 	HealthcheckURL string
 	// HealthcheckInterval: must be shorter than the configured dead-man's-switch Period to survive a single missed ping.
 	HealthcheckInterval time.Duration
+	// HealthcheckFailureThreshold: consecutive publish failures that flip the check to DOWN via /fail. Zero disables.
+	HealthcheckFailureThreshold int
 }
 
 type Publishing struct {
@@ -111,6 +113,14 @@ func Load(envPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Source.HealthcheckInterval = hi
+	hft, err := envInt("HEALTHCHECK_FAIL_THRESHOLD")
+	if err != nil {
+		return nil, err
+	}
+	if hft == 0 {
+		hft = 3
+	}
+	cfg.Source.HealthcheckFailureThreshold = hft
 
 	cats, err := parseCategories(envStr("CATEGORIES"))
 	if err != nil {

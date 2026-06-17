@@ -31,6 +31,11 @@ type runner struct {
 	client *eitaa.Client
 	rt     *router.Router
 	home   *homepageClient
+
+	// publishFailStreak counts consecutive Publish failures; flips healthcheck to DOWN when it crosses the threshold.
+	publishFailStreak int
+	// publishFailAlerted is true after we've sent the /fail ping for the current streak — avoids spamming the ping.
+	publishFailAlerted bool
 }
 
 func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
@@ -108,8 +113,10 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 	postID, err := r.pub.Publish(ctx, routed)
 	if err != nil {
 		r.log.Error("publish failed", "id", m.ID, "err", err)
+		r.recordPublishFailure(ctx)
 		return false
 	}
+	r.recordPublishSuccess()
 
 	// Persist seen-state immediately so a crash before end-of-tick can't re-publish (issue #6).
 	r.markPublishedAndPersist(m.ID, postID, fp, m.Date)
