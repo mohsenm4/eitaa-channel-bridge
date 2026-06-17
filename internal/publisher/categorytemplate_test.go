@@ -116,29 +116,29 @@ func TestExtractCategoryVars_TavanmandsaziUsesSimpleParser(t *testing.T) {
 	}
 }
 
-func TestRezvan_RoutesToSimpleTemplateAndParser(t *testing.T) {
+func TestNojavanan_RoutesToSimpleTemplateAndParser(t *testing.T) {
 	msg := tavanmandRouted()
-	msg.Category = "rezvan"
-	msg.CategoryFa = "رضوان"
+	msg.Category = "nojavanan"
+	msg.CategoryFa = "واحد نوجوانان"
 
-	if _, ok := loadCategoryTemplate("rezvan"); !ok {
-		t.Fatal("rezvan.tmpl not embedded")
+	if _, ok := loadCategoryTemplate("nojavanan"); !ok {
+		t.Fatal("nojavanan.tmpl not embedded")
 	}
 	vars := extractCategoryVars(msg, 777)
 	if vars == nil {
-		t.Fatal("expected non-nil vars for rezvan")
+		t.Fatal("expected non-nil vars for nojavanan")
 	}
 	if vars["TITLE"] == "" || vars["BODY"] == "" || vars["EVENT_DATE"] == "" {
 		t.Errorf("simple parser fields missing: %#v", vars)
 	}
 
-	tmpl, _ := loadCategoryTemplate("rezvan")
+	tmpl, _ := loadCategoryTemplate("nojavanan")
 	out := renderCategoryTemplate(tmpl, vars)
 	if strings.Contains(out, "{{") {
 		t.Errorf("unfilled placeholder remains:\n%s", out)
 	}
 	if !strings.Contains(out, "📅 تاریخ برگزاری: 1404/08/15") {
-		t.Errorf("date line missing in rezvan output:\n%s", out)
+		t.Errorf("date line missing in nojavanan output:\n%s", out)
 	}
 }
 
