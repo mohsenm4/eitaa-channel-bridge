@@ -10,14 +10,7 @@ import (
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/utils"
 )
 
-// runSeed marks every message currently visible on the channel page as already-seen,
-// without publishing anything. Use this on a fresh install (or after deleting seen.json)
-// when you want the bridge to ignore everything posted before now and only act on
-// messages that arrive from this point forward.
-//
-// BACKFILL=0 alone does NOT achieve this — it only disables ?before= pagination.
-// The first tick still fetches the visible page (~20 latest messages) and treats
-// them as new because seen.json is empty.
+// runSeed marks every currently-visible channel message as already-seen so a fresh install only acts on later arrivals.
 func runSeed(log *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("seed", flag.ExitOnError)
 	envPath := fs.String("env", defaultEnvPath, "path to .env file (optional)")

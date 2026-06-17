@@ -12,9 +12,7 @@ import (
 	"time"
 )
 
-// homepageClient calls the eitaa-bridge-helper plugin's homepage endpoints so
-// the bridge can keep poster slides on the home page pointing at the latest
-// post in each category.
+// homepageClient calls the eitaa-bridge-helper plugin endpoints that keep homepage poster slides pointing at the latest post per category.
 type homepageClient struct {
 	base  string
 	user  string
@@ -35,9 +33,7 @@ func newHomepageClient(wpURL, user, pass string) *homepageClient {
 	}
 }
 
-// detectFrontPageID asks WordPress which page is configured as the static
-// front page, so the operator doesn't have to copy a numeric id into .env.
-// Returns 0 if the site uses the blog layout (show_on_front = "posts").
+// detectFrontPageID asks WP for the static front-page id; returns 0 when the site uses the blog layout.
 func (h *homepageClient) detectFrontPageID(ctx context.Context) (int, error) {
 	body, err := h.getJSON(ctx, "/wp-json/eitaa-bridge/v1/site-settings")
 	if err != nil {
@@ -65,8 +61,7 @@ type Slide struct {
 	Title   string `json:"title"`
 }
 
-// listSlides walks the slideshows on the given page and returns the slide
-// inventory so the bridge can auto-discover the hashtag→slide_uid mapping.
+// listSlides returns the slide inventory on the given page so the bridge can auto-discover the hashtag→slide_uid mapping.
 func (h *homepageClient) listSlides(ctx context.Context, pageID int) ([]Slide, error) {
 	body, err := h.getJSON(ctx, fmt.Sprintf("/wp-json/eitaa-bridge/v1/list-slides?page_id=%d", pageID))
 	if err != nil {
@@ -81,9 +76,7 @@ func (h *homepageClient) listSlides(ctx context.Context, pageID int) ([]Slide, e
 	return out.Slides, nil
 }
 
-// mediaSlug fetches the WP media item identified by mediaID and returns its
-// slug (e.g. "hemayat-khedmat-poster"). Used to match poster images against
-// category slugs so the mapping is implicit in the filenames.
+// mediaSlug returns the WP media item's slug (e.g. "hemayat-khedmat-poster") used to match poster images against category slugs.
 func (h *homepageClient) mediaSlug(ctx context.Context, mediaID int) (string, error) {
 	body, err := h.getJSON(ctx, fmt.Sprintf("/wp-json/wp/v2/media/%d", mediaID))
 	if err != nil {
@@ -129,9 +122,7 @@ func (h *homepageClient) getJSON(ctx context.Context, path string) ([]byte, erro
 	return body, nil
 }
 
-// updatePosterLink rewrites the link='manually,...' attribute of the av_slide
-// matching slideUID on pageID so it points at newLink. Non-2xx responses are
-// returned as errors; callers in the bridge log and continue.
+// updatePosterLink rewrites the av_slide's link='manually,...' to newLink; non-2xx is returned as an error for the caller to log.
 func (h *homepageClient) updatePosterLink(ctx context.Context, pageID int, slideUID, newLink string) error {
 	body, _ := json.Marshal(map[string]any{
 		"page_id": pageID,

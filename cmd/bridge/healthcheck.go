@@ -7,12 +7,7 @@ import (
 	"time"
 )
 
-// runHealthcheckLoop sends a "still alive" GET to cfg.Source.HealthcheckURL on start, then
-// every cfg.Source.HealthcheckInterval until ctx is cancelled. Independent of polling so cold
-// mode (6h between fetches by default) does not silence the heartbeat.
-//
-// Failures are warn-logged and ignored — a dead-man's-switch service treats no-ping as down,
-// which is exactly what we want when the network or the remote service is itself broken.
+// runHealthcheckLoop pings HealthcheckURL on start then every HealthcheckInterval; failures are warn-logged (silence = down).
 func (r *runner) runHealthcheckLoop(ctx context.Context) {
 	if r.cfg.Source.HealthcheckURL == "" {
 		return
@@ -35,8 +30,7 @@ func (r *runner) runHealthcheckLoop(ctx context.Context) {
 	}
 }
 
-// pingHealthcheck fires one GET with a 5s timeout. Non-2xx and transport errors are logged but
-// do not propagate — silence is the signal, not an in-band error.
+// pingHealthcheck fires one GET with a 5s timeout; non-2xx and transport errors are logged but not propagated (silence = signal).
 func (r *runner) pingHealthcheck(parent context.Context) {
 	if r.cfg.Source.HealthcheckURL == "" {
 		return
@@ -61,8 +55,7 @@ func (r *runner) pingHealthcheck(parent context.Context) {
 	r.log.Debug("healthcheck ping ok")
 }
 
-// redactURL keeps the host visible but hides the path so logs don't leak the ping secret.
-// hc-ping.com URLs look like https://hc-ping.com/<uuid> — the UUID is the only auth.
+// redactURL keeps the host visible but hides the path so logs don't leak the hc-ping.com UUID (the only auth).
 func redactURL(u string) string {
 	i := strings.Index(u, "://")
 	if i < 0 {

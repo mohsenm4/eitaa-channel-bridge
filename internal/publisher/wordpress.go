@@ -52,10 +52,7 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) (int, error)
 		return 0, fmt.Errorf("routed message has no category label")
 	}
 
-	// A post with this slug already on the site means a prior publish attempt landed
-	// but its HTTP response was lost in flight (network blip, read timeout). Adopt
-	// that post instead of creating a second one. Slug is deterministic from category
-	// + eitaa ID, so a hit here can only be from a previous attempt for this message.
+	// Existing post with this slug = prior publish whose HTTP response was lost; adopt instead of duplicating.
 	slug := buildPostSlug(msg)
 	if existingID, err := p.findPostBySlug(ctx, slug); err != nil {
 		p.log.Warn("wordpress: slug lookup failed, proceeding with publish",
@@ -97,8 +94,7 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) (int, error)
 	return p.plainInsert(ctx, msg, catID, featuredID, slug, content)
 }
 
-// Update rewrites an existing WP post's title/content/category/featured-media to mirror an Eitaa edit.
-// Photos are re-uploaded (the WP media library dedupes by hash-slug so this is cheap if unchanged).
+// Update rewrites an existing WP post to mirror an Eitaa edit; photos are re-uploaded (WP dedupes by hash-slug).
 func (p *WordPress) Update(ctx context.Context, postID int, msg router.Routed) error {
 	if postID <= 0 {
 		return fmt.Errorf("update: invalid postID %d", postID)
@@ -189,8 +185,7 @@ func (p *WordPress) plainInsert(ctx context.Context, msg router.Routed, catID, f
 	return out.ID, nil
 }
 
-// uploadAllPhotos uploads photos[0] as the featured image and the rest as gallery items.
-// Failures are non-fatal — better to publish text-only than to stall the message.
+// uploadAllPhotos uploads photos[0] as featured and the rest as gallery items; failures are non-fatal.
 func (p *WordPress) uploadAllPhotos(ctx context.Context, msg router.Routed) (featuredID int, galleryIDs []int) {
 	for i, photo := range msg.Photos {
 		id, err := p.uploadOrReuse(ctx, photo, msg.ID)
@@ -253,9 +248,7 @@ func (p *WordPress) cloneViaHelper(ctx context.Context, sourceID int, title, con
 	return out.ID, out.Link, nil
 }
 
-// findPostBySlug returns the ID of a post with the exact given slug, across all
-// non-trash statuses. Used by Publish to detect a prior attempt whose HTTP response
-// was lost. Returns 0 when no match.
+// findPostBySlug returns the ID of a non-trash post with the exact slug, or 0 if none.
 func (p *WordPress) findPostBySlug(ctx context.Context, slug string) (int, error) {
 	if slug == "" {
 		return 0, nil
@@ -573,8 +566,7 @@ func (p *WordPress) fetchTemplate(ctx context.Context, catID int) (int, string, 
 	return posts[0].ID, posts[0].Content.Raw, nil
 }
 
-// applyTemplate clones the template tree and only swaps the last [vc_column_text] body
-// and the first vc_single_image id — preserving rows/columns/separators verbatim.
+// applyTemplate swaps only the last [vc_column_text] body and first vc_single_image id, keeping the rest of the template verbatim.
 func (p *WordPress) applyTemplate(templateRaw string, msg router.Routed, featuredID int) (string, bool) {
 	matches := vcColumnTextRe.FindAllStringIndex(templateRaw, -1)
 	if len(matches) == 0 {
@@ -600,16 +592,7 @@ func (p *WordPress) renderHTML(msg router.Routed) string {
 	return wrapVCRow(p.renderBodyLines(msg))
 }
 
-// renderBodyLines emits a <p> per content line, stripping markers, hashtag
-// lines, and the channel sign-off block. Channel admins use two conventions:
-//
-//  1. Sign-off AFTER hashtags  → the "break on first hashtag-only line"
-//     below catches the signature block in one shot.
-//  2. Sign-off BEFORE hashtags → handled by isChannelSignatureLine, which
-//     drops the 🟢-prefixed channel-name line, the 🆔-prefixed URL line,
-//     and anything containing "eitaa.com/" (the canonical invite link).
-//
-// Either way, the published post never carries the channel signature.
+// renderBodyLines emits one <p> per content line, dropping markers, hashtags, and the channel sign-off block.
 func (p *WordPress) renderBodyLines(msg router.Routed) string {
 	var inner strings.Builder
 	if msg.EventDate != "" {
@@ -642,14 +625,7 @@ func (p *WordPress) renderBodyLines(msg router.Routed) string {
 	return inner.String()
 }
 
-// isChannelSignatureLine returns true for lines that look like the Eitaa
-// channel sign-off footer admins paste at the bottom of messages. Catches:
-//
-//	🟢 کانال رسمی <name>           ← green-dot channel-name line
-//	🆔 https://eitaa.com/<slug>    ← id-square invite-link line
-//
-// plus any line containing an eitaa.com/ URL, which covers handwritten
-// variants without the emoji prefix.
+// isChannelSignatureLine matches the Eitaa channel sign-off footer (🟢/🆔 prefix or any eitaa.com URL).
 func isChannelSignatureLine(line string) bool {
 	if line == "" {
 		return false
@@ -669,8 +645,7 @@ func wrapVCRow(html string) string {
 
 // ─── Gallery insertion ──────────────────────────────────────────────
 
-// mergeOrInsertGallery splices new media ids into an existing [vc_gallery],
-// or inserts a fresh gallery just before the closing [/vc_column][/vc_row].
+// mergeOrInsertGallery splices new media ids into an existing [vc_gallery] or inserts a fresh one before [/vc_column][/vc_row].
 func mergeOrInsertGallery(content string, newIDs []int) string {
 	gallery := buildVCGalleryInline(newIDs)
 	if gallery == "" {

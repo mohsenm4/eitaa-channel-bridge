@@ -56,8 +56,7 @@ func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
 
 func (r *runner) Close() error { return r.pub.Close() }
 
-// processBatch returns how many messages were handled (published or deliberately skipped).
-// Publish failures are NOT counted, so the next tick retries them.
+// processBatch returns how many messages were handled (published or skipped); publish failures aren't counted so the next tick retries.
 func (r *runner) processBatch(ctx context.Context, msgs []eitaa.Message) int {
 	processed := 0
 	for _, m := range msgs {
@@ -71,8 +70,7 @@ func (r *runner) processBatch(ctx context.Context, msgs []eitaa.Message) int {
 	return processed
 }
 
-// processOne returns true if the message reached a terminal state (published / inbox / skip).
-// Returns false for transient failures so the next tick retries.
+// processOne returns true on a terminal state (published / inbox / skip); false on transient failures for retry next tick.
 func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 	routed := r.rt.Route(m)
 
@@ -131,10 +129,7 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 	return true
 }
 
-// discoverHomepage fills in cfg.Homepage.{PageID,PosterLinks} from WordPress
-// itself so the operator doesn't have to write either into .env. Manual entries
-// always win — discovery only populates the unset fields. A failure here is
-// non-fatal: the bridge logs and continues publishing without poster updates.
+// discoverHomepage auto-fills cfg.Homepage.{PageID,PosterLinks} from WP; manual .env entries win and failures are non-fatal.
 func (r *runner) discoverHomepage(ctx context.Context) {
 	if r.home == nil {
 		// No app password / no WP target → homepage features disabled at startup.
@@ -184,9 +179,7 @@ func (r *runner) discoverHomepage(ctx context.Context) {
 		if err != nil || slug == "" {
 			continue
 		}
-		// Match if the image slug contains the category's WP slug. So
-		// `hemayat-khedmat-poster` matches category slug `hemayat-khedmat`,
-		// and `qarz-al-hasaneh.png` (no suffix) matches `qarz-al-hasaneh`.
+		// Match: image slug contains category slug (e.g. `hemayat-khedmat-poster` → `hemayat-khedmat`).
 		for _, cat := range r.cfg.Publishing.Categories {
 			if cat.Slug == "" {
 				continue
@@ -210,19 +203,14 @@ func (r *runner) discoverHomepage(ctx context.Context) {
 	}
 }
 
-// maybeUpdateHomepagePoster rewrites the link of the homepage poster slide
-// mapped to this routing hashtag so it points at the freshly-published post.
-// Lookup is by routed.Category (slug) so renaming the WP-side label can't
-// break the wiring. Non-fatal: the post is already on WP; if this fails the
-// poster just keeps its prior link until the next publish in the same category.
+// maybeUpdateHomepagePoster repoints the matching homepage poster's link at the freshly-published post; non-fatal on failure.
 func (r *runner) maybeUpdateHomepagePoster(ctx context.Context, routed router.Routed, postID int) {
 	if r.home == nil || len(r.cfg.Homepage.PosterLinks) == 0 || r.cfg.Homepage.PageID <= 0 {
 		return
 	}
 	uid, ok := r.cfg.Homepage.PosterLinks[routed.Category]
 	if !ok {
-		// Try matching by hashtag too — operator may have keyed POSTER_LINKS
-		// off the channel hashtag rather than the WP slug.
+		// Fall back to matching by hashtag in case POSTER_LINKS was keyed off the hashtag, not the slug.
 		for _, tag := range routed.Hashtags {
 			if u, found := r.cfg.Homepage.PosterLinks[tag]; found {
 				uid = u
@@ -246,8 +234,7 @@ func (r *runner) maybeUpdateHomepagePoster(ctx context.Context, routed router.Ro
 		"category", routed.Category, "slide_uid", uid, "wp_id", postID, "link", link)
 }
 
-// markSeenAndPersist Marks the message as seen and flushes the state file.
-// A save failure is logged loudly — the message will be re-processed on restart.
+// markSeenAndPersist marks the message as seen and flushes the state file; save failures are logged loudly.
 func (r *runner) markSeenAndPersist(id int) {
 	r.store.Mark(r.cfg.Source.Channel, id)
 	if err := r.store.Save(); err != nil {
@@ -286,13 +273,7 @@ func (r *runner) tick(ctx context.Context) {
 	}
 }
 
-// syncEditsAndDeletes mirrors author actions in the source channel onto the WP target.
-// For each tracked message (PostID>0) whose ID is still inside the fetched page:
-//   - present in fetch with a different fingerprint → push an edit
-//   - absent from fetch → push a delete (one-shot, idempotent via Deleted flag)
-//
-// Message age does NOT gate this check — EditWindow only controls polling cadence.
-// Late edits / deletes made hours later are still mirrored on the next cold-mode tick.
+// syncEditsAndDeletes mirrors author edits/deletes from the source channel to WP for tracked messages still on the fetched page.
 func (r *runner) syncEditsAndDeletes(ctx context.Context, msgs []eitaa.Message) {
 	if len(msgs) == 0 {
 		return
@@ -306,8 +287,7 @@ func (r *runner) syncEditsAndDeletes(ctx context.Context, msgs []eitaa.Message) 
 		}
 	}
 
-	// Upper bound is unbounded: a deleted "latest" message is missing from the page but its ID > min(fetched),
-	// so we must still consider it. The lower bound is the oldest visible — anything older is off-page (can't tell).
+	// Upper bound is unbounded so a deleted "latest" message (missing from the page but ID > min) is still considered.
 	tracked := r.store.TrackedInRange(r.cfg.Source.Channel, minID, math.MaxInt)
 	if len(tracked) == 0 {
 		return
@@ -323,8 +303,7 @@ func (r *runner) syncEditsAndDeletes(ctx context.Context, msgs []eitaa.Message) 
 	}
 }
 
-// maybeSyncEdit pushes an Update to the target when the fetched message's text fingerprint differs from the stored one.
-// Stored FP is updated only on success, so transient publisher failures get retried next tick.
+// maybeSyncEdit Updates the target when the fetched fingerprint differs; stored FP advances only on success.
 func (r *runner) maybeSyncEdit(ctx context.Context, m eitaa.Message, entry state.Entry) {
 	newFP := fingerprint(m.Text)
 	if entry.FP == newFP {

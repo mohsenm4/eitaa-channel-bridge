@@ -1,13 +1,7 @@
 <?php
 /**
  * Plugin Name: Eitaa Bridge Helper
- * Description: REST endpoint that clones an existing post (preserving all
- *              post meta — including WPBakery and theme layout fields) and
- *              then overrides title, content, featured image, and category.
- *              Replicates the "Duplicate Post" plugin's behaviour via REST
- *              so the eitaa-channel-bridge bot produces posts that lay out
- *              identically to manually-cloned ones (no sidebar, hadith
- *              block preserved, page builder shortcodes rendered).
+ * Description: REST endpoints that clone posts (preserving meta) and edit Avia layout for the eitaa-channel-bridge bot.
  * Version:     1.5.0
  * Author:      Mohsen
  */
@@ -34,9 +28,7 @@ add_action('rest_api_init', function () {
         ],
     ]);
 
-    // Diagnostic: dump every post_meta key+value (truncated) for a given page.
-    // Used to discover where Enfold/Avia stores the actual layout, since plain
-    // REST hides private (underscore-prefixed) meta.
+    // Diagnostic: dump every post_meta key+value (truncated) — used to find where Enfold/Avia stores layout.
     register_rest_route('eitaa-bridge/v1', '/page-meta', [
         'methods'             => 'GET',
         'permission_callback' => function () {
@@ -48,10 +40,7 @@ add_action('rest_api_init', function () {
         ],
     ]);
 
-    // Add a slide to the [av_content_slider] block on a page. Writes to BOTH
-    // _aviaLayoutBuilderCleanData (the canonical source) and post_content
-    // (the display copy), then clears the parsed-tree cache and WP Rocket so
-    // the change actually reaches the front-end.
+    // Add a slide to [av_content_slider]; writes CleanData + post_content and busts the parsed-tree + WP Rocket caches.
     register_rest_route('eitaa-bridge/v1', '/add-hadith-slide', [
         'methods'             => 'POST',
         'permission_callback' => function () {
@@ -67,9 +56,7 @@ add_action('rest_api_init', function () {
         ],
     ]);
 
-    // Remove an av_content_slide by its av_uid from both CleanData and
-    // post_content. Symmetric to add-hadith-slide so an apply/revert pair
-    // leaves no residue.
+    // Remove an av_content_slide by av_uid from CleanData + post_content; symmetric to add-hadith-slide.
     register_rest_route('eitaa-bridge/v1', '/remove-slide', [
         'methods'             => 'POST',
         'permission_callback' => function () {
@@ -82,9 +69,7 @@ add_action('rest_api_init', function () {
         ],
     ]);
 
-    // Diagnostic: list every [av_slide] / [av_content_slide] on a page with
-    // its av_uid, link, and image id, so the operator can figure out which
-    // uid corresponds to which poster when wiring POSTER_LINKS in .env.
+    // Diagnostic: list every [av_slide] / [av_content_slide] on a page with av_uid, link, image id.
     register_rest_route('eitaa-bridge/v1', '/list-slides', [
         'methods'             => 'GET',
         'permission_callback' => function () {
@@ -96,8 +81,7 @@ add_action('rest_api_init', function () {
         ],
     ]);
 
-    // Return the WP front-page settings so the bridge can discover the home
-    // page id by itself instead of being told via .env.
+    // Return WP front-page settings so the bridge can auto-discover the home page id.
     register_rest_route('eitaa-bridge/v1', '/site-settings', [
         'methods'             => 'GET',
         'permission_callback' => function () {
@@ -106,9 +90,7 @@ add_action('rest_api_init', function () {
         'callback' => 'eitaa_bridge_site_settings',
     ]);
 
-    // Rewrite an [av_slide] block's link attribute by av_uid. Used by the
-    // bridge after publishing a post in a category that maps to a slide,
-    // so the homepage poster always points to the latest report.
+    // Rewrite an [av_slide] link attribute by av_uid so the homepage poster always points to the latest report.
     register_rest_route('eitaa-bridge/v1', '/update-slide-link', [
         'methods'             => 'POST',
         'permission_callback' => function () {
@@ -187,11 +169,7 @@ function eitaa_bridge_add_hadith_slide(WP_REST_Request $req) {
     $uid     = 'av-' . substr(md5(uniqid('', true)), 0, 4);
     $closer  = '[/av_content_slider]';
 
-    // The canonical source-of-truth for an Enfold/Avia layout is the
-    // _aviaLayoutBuilderCleanData post_meta. post_content is only a
-    // cached display copy. Updating post_content alone has no visible
-    // effect on the front-end — Avia rebuilds post_content from
-    // CleanData on save. So we update CleanData first.
+    // _aviaLayoutBuilderCleanData is the canonical layout source; post_content is only a display cache, so update CleanData first.
     $clean_data = get_post_meta($page_id, '_aviaLayoutBuilderCleanData', true);
     $touched = [];
 
@@ -211,8 +189,7 @@ function eitaa_bridge_add_hadith_slide(WP_REST_Request $req) {
         $touched[] = '_aviaLayoutBuilderCleanData';
     }
 
-    // Also keep post_content in sync — the shortcode parser tree
-    // (_avia_builder_shortcode_tree) is rebuilt from this on save_post.
+    // Keep post_content in sync; the shortcode parser tree (_avia_builder_shortcode_tree) is rebuilt from it on save_post.
     $idx_pc = strpos($page->post_content, $closer);
     if ($idx_pc === false) {
         return new WP_Error('eitaa_bridge_no_slider',
@@ -232,8 +209,7 @@ function eitaa_bridge_add_hadith_slide(WP_REST_Request $req) {
     }
     $touched[] = 'post_content';
 
-    // Force Avia to re-parse the shortcode tree on the next request by
-    // dropping the cached version.
+    // Force Avia to re-parse the shortcode tree next request by dropping the cached version.
     $cleared = [];
     foreach (['_avia_builder_shortcode_tree', '_avia_sc_parser_state'] as $k) {
         if (metadata_exists('post', $page_id, $k)) {
@@ -282,8 +258,7 @@ function eitaa_bridge_remove_slide(WP_REST_Request $req) {
             ['status' => 400]);
     }
 
-    // Match the whole slide block by its av_uid attribute, across either
-    // line-ending convention.
+    // Match the whole slide block by av_uid across either line-ending convention.
     $pattern = '#\[av_content_slide[^\]]*av_uid=\'' . preg_quote($uid, '#') . '\'[^\]]*\][\s\S]*?\[/av_content_slide\]\r?\n?#u';
 
     $touched = [];
@@ -365,9 +340,7 @@ function eitaa_bridge_clone_post(WP_REST_Request $req) {
         return $new_id;
     }
 
-    // Copy every post_meta from the source. This is the part standard
-    // REST can't do — it's what makes the page builder compile the
-    // shortcodes and the theme pick the no-sidebar layout.
+    // Copy every post_meta from the source — what standard REST can't do; lets the page builder + theme layout work.
     $skip = [
         '_edit_lock', '_edit_last',
         '_thumbnail_id',     // featured image handled below
@@ -383,8 +356,7 @@ function eitaa_bridge_clone_post(WP_REST_Request $req) {
         }
     }
 
-    // Featured image: prefer the one passed in, else fall back to the
-    // source's so the new post is never imageless.
+    // Featured image: prefer the passed-in one, else the source's, so the new post is never imageless.
     if ($featured_media > 0) {
         set_post_thumbnail($new_id, $featured_media);
     } elseif ($src_thumb = get_post_thumbnail_id($source_id)) {
@@ -433,8 +405,7 @@ function eitaa_bridge_list_slides(WP_REST_Request $req) {
         $haystack = (string) $page->post_content;
     }
     $out = [];
-    // av_slide: image slideshow entry. \b prevents matching the parent
-    // [av_slideshow] widget tag, which also starts with "av_slide".
+    // av_slide: image slideshow entry; \b avoids matching the parent [av_slideshow] widget tag.
     if (preg_match_all('#\[av_slide\b([^\]]*)\][\s\S]*?\[/av_slide\]#u', $haystack, $blocks, PREG_SET_ORDER)) {
         foreach ($blocks as $b) {
             $attrs = $b[1];
@@ -447,8 +418,7 @@ function eitaa_bridge_list_slides(WP_REST_Request $req) {
             ];
         }
     }
-    // av_content_slide: the hadith-style text slider entry. \b prevents
-    // matching the parent [av_content_slider] widget tag.
+    // av_content_slide: hadith-style text slider entry; \b avoids matching the parent [av_content_slider] widget tag.
     if (preg_match_all('#\[av_content_slide\b([^\]]*)\][\s\S]*?\[/av_content_slide\]#u', $haystack, $blocks, PREG_SET_ORDER)) {
         foreach ($blocks as $b) {
             $attrs = $b[1];
@@ -491,8 +461,7 @@ function eitaa_bridge_update_slide_link(WP_REST_Request $req) {
             ['status' => 400]);
     }
 
-    // Avia stores image-slide links as link='manually,<url>'. Build that
-    // verbatim so we don't disturb other link styles (e.g. 'lightbox').
+    // Avia stores image-slide links as link='manually,<url>'; build that verbatim so other styles (e.g. 'lightbox') aren't disturbed.
     $new_link_val = $link === '' ? '' : 'manually,' . $link;
     // Rewrite link='...' inside [av_slide ...] blocks whose av_uid matches.
     $rewriter = function ($block) use ($uid, $new_link_val) {
