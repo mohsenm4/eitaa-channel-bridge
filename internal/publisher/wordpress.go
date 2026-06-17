@@ -568,24 +568,36 @@ func (p *WordPress) fetchTemplate(ctx context.Context, catID int) (int, string, 
 
 // applyTemplate swaps only the last [vc_column_text] body and first vc_single_image id, keeping the rest of the template verbatim.
 func (p *WordPress) applyTemplate(templateRaw string, msg router.Routed, featuredID int) (string, bool) {
-	matches := vcColumnTextRe.FindAllStringIndex(templateRaw, -1)
+	out, ok := replaceLastColumnText(templateRaw, p.renderBodyLines(msg))
+	if !ok {
+		return "", false
+	}
+	if featuredID > 0 {
+		out = replaceFirstSingleImageID(out, featuredID)
+	}
+	return out, true
+}
+
+// replaceLastColumnText swaps the last [vc_column_text]...[/vc_column_text] block with newBody; returns false when no block is found.
+func replaceLastColumnText(template, newBody string) (string, bool) {
+	matches := vcColumnTextRe.FindAllStringIndex(template, -1)
 	if len(matches) == 0 {
 		return "", false
 	}
 	last := matches[len(matches)-1]
-	newBlock := "[vc_column_text]\n" + p.renderBodyLines(msg) + "[/vc_column_text]"
-	out := templateRaw[:last[0]] + newBlock + templateRaw[last[1]:]
-	if featuredID > 0 {
-		replaced := false
-		out = vcSingleImageRe.ReplaceAllStringFunc(out, func(match string) string {
-			if replaced {
-				return match
-			}
-			replaced = true
-			return vcSingleImageRe.ReplaceAllString(match, fmt.Sprintf(`${1}%d${3}`, featuredID))
-		})
+	newBlock := "[vc_column_text]\n" + newBody + "[/vc_column_text]"
+	return template[:last[0]] + newBlock + template[last[1]:], true
+}
+
+// replaceFirstSingleImageID rewrites the image id in the first [vc_single_image] tag and leaves the rest untouched.
+func replaceFirstSingleImageID(content string, imageID int) string {
+	loc := vcSingleImageRe.FindStringIndex(content)
+	if loc == nil {
+		return content
 	}
-	return out, true
+	match := content[loc[0]:loc[1]]
+	newMatch := vcSingleImageRe.ReplaceAllString(match, fmt.Sprintf(`${1}%d${3}`, imageID))
+	return content[:loc[0]] + newMatch + content[loc[1]:]
 }
 
 func (p *WordPress) renderHTML(msg router.Routed) string {

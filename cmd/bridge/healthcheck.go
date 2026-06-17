@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// healthcheckPingTimeout bounds each ping so a slow remote can't block the loop.
+const healthcheckPingTimeout = 5 * time.Second
+
 // runHealthcheckLoop pings HealthcheckURL on start then every HealthcheckInterval; failures are warn-logged (silence = down).
 func (r *runner) runHealthcheckLoop(ctx context.Context) {
 	if r.cfg.Source.HealthcheckURL == "" {
@@ -35,7 +38,7 @@ func (r *runner) pingHealthcheck(parent context.Context) {
 	if r.cfg.Source.HealthcheckURL == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, healthcheckPingTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.cfg.Source.HealthcheckURL, nil)
 	if err != nil {

@@ -108,7 +108,7 @@ func Parse(channel, htmlSrc string) ([]Message, error) {
 	}
 
 	var msgs []Message
-	walk(doc, func(n *html.Node) {
+	walkDOM(doc, func(n *html.Node) {
 		if n.Type != html.ElementNode || n.Data != "div" {
 			return
 		}
@@ -138,20 +138,20 @@ func parseMessage(channel string, root *html.Node, dataPost string) Message {
 	}
 	msg.Link = fmt.Sprintf("%s/%s/%d", defaultBaseURL, channel, msg.ID)
 
-	walk(root, func(n *html.Node) {
+	walkDOM(root, func(n *html.Node) {
 		if n.Type != html.ElementNode {
 			return
 		}
 		switch {
 		case n.Data == "a" && hasClass(n, "etme_widget_message_owner_name"):
-			msg.Author = strings.TrimSpace(textOf(n))
+			msg.Author = strings.TrimSpace(nodeText(n))
 		case n.Data == "div" && hasClass(n, "etme_widget_message_forwarded_from"):
-			msg.ForwardedFrom = cleanText(textOf(n))
+			msg.ForwardedFrom = cleanText(nodeText(n))
 		case n.Data == "div" && hasClass(n, "etme_widget_message_text"):
 			msg.TextHTML = strings.TrimSpace(innerHTML(n))
-			msg.Text = strings.TrimSpace(textOf(n))
+			msg.Text = strings.TrimSpace(nodeText(n))
 		case n.Data == "span" && hasClass(n, "etme_widget_message_views"):
-			if v, err := parseViews(attr(n, "data-count"), textOf(n)); err == nil {
+			if v, err := parseViews(attr(n, "data-count"), nodeText(n)); err == nil {
 				msg.Views = v
 			}
 		case n.Data == "time" && hasClass(n, "time"):
@@ -175,10 +175,11 @@ func parseMessage(channel string, root *html.Node, dataPost string) Message {
 	return msg
 }
 
-func walk(n *html.Node, fn func(*html.Node)) {
-	fn(n)
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		walk(c, fn)
+// walkDOM does a depth-first pre-order traversal of node, calling fn on each descendant.
+func walkDOM(node *html.Node, fn func(*html.Node)) {
+	fn(node)
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		walkDOM(child, fn)
 	}
 }
 
@@ -204,11 +205,12 @@ func hasClass(n *html.Node, class string) bool {
 	return false
 }
 
-func textOf(n *html.Node) string {
+// nodeText concatenates all descendant text nodes in document order.
+func nodeText(node *html.Node) string {
 	var sb strings.Builder
-	walk(n, func(c *html.Node) {
-		if c.Type == html.TextNode {
-			sb.WriteString(c.Data)
+	walkDOM(node, func(n *html.Node) {
+		if n.Type == html.TextNode {
+			sb.WriteString(n.Data)
 		}
 	})
 	return sb.String()

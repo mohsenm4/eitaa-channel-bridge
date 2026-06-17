@@ -150,10 +150,13 @@ func (h *homepageClient) updatePosterLink(ctx context.Context, pageID int, slide
 	return nil
 }
 
+// errorSnippetMax caps response-body bytes shown in error logs.
+const errorSnippetMax = 300
+
+// snippet truncates a response body so error logs stay readable instead of dumping full WP HTML on 500s.
 func snippet(b []byte) string {
-	const max = 300
-	if len(b) <= max {
+	if len(b) <= errorSnippetMax {
 		return string(b)
 	}
-	return string(b[:max]) + "..."
+	return string(b[:errorSnippetMax]) + "..."
 }

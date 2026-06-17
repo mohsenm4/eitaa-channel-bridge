@@ -129,77 +129,100 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 	return true
 }
 
+const homepageDiscoveryTimeout = 30 * time.Second
+
 // discoverHomepage auto-fills cfg.Homepage.{PageID,PosterLinks} from WP; manual .env entries win and failures are non-fatal.
 func (r *runner) discoverHomepage(ctx context.Context) {
-	if r.home == nil {
-		// No app password / no WP target → homepage features disabled at startup.
-		if r.cfg.WordPress.URL == "" || r.cfg.WordPress.Username == "" {
-			return
-		}
-		r.home = newHomepageClient(r.cfg.WordPress.URL, r.cfg.WordPress.Username, r.cfg.WordPress.AppPassword)
+	if !r.ensureHomepageClient() {
+		return
 	}
-	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, homepageDiscoveryTimeout)
 	defer cancel()
 
-	if r.cfg.Homepage.PageID == 0 {
-		pid, err := r.home.detectFrontPageID(dctx)
-		if err != nil {
-			r.log.Warn("homepage discovery: front-page id lookup failed — set HOMEPAGE_PAGE_ID manually to enable poster updates",
-				"err", err)
-			r.home = nil
-			return
-		}
-		if pid == 0 {
-			r.log.Info("homepage discovery: site uses the blog layout, no static front page — skipping")
-			r.home = nil
-			return
-		}
-		r.cfg.Homepage.PageID = pid
-		r.log.Info("homepage page id discovered", "page_id", pid)
+	if !r.discoverFrontPageID(ctx) {
+		return
 	}
+	r.autoMapPostersToCategories(ctx)
+}
 
-	if len(r.cfg.Homepage.PosterLinks) > 0 {
-		return // manual map wins; trust the operator.
+// ensureHomepageClient lazily builds r.home; returns false when WP isn't configured.
+func (r *runner) ensureHomepageClient() bool {
+	if r.home != nil {
+		return true
 	}
-	slides, err := r.home.listSlides(dctx, r.cfg.Homepage.PageID)
+	if r.cfg.WordPress.URL == "" || r.cfg.WordPress.Username == "" {
+		return false
+	}
+	r.home = newHomepageClient(r.cfg.WordPress.URL, r.cfg.WordPress.Username, r.cfg.WordPress.AppPassword)
+	return true
+}
+
+// discoverFrontPageID asks WP for the static front-page id; returns false to disable homepage features this run.
+func (r *runner) discoverFrontPageID(ctx context.Context) bool {
+	if r.cfg.Homepage.PageID != 0 {
+		return true
+	}
+	pageID, err := r.home.detectFrontPageID(ctx)
+	if err != nil {
+		r.log.Warn("homepage discovery: front-page id lookup failed — set HOMEPAGE_PAGE_ID manually to enable poster updates", "err", err)
+		r.home = nil
+		return false
+	}
+	if pageID == 0 {
+		r.log.Info("homepage discovery: site uses the blog layout, no static front page — skipping")
+		r.home = nil
+		return false
+	}
+	r.cfg.Homepage.PageID = pageID
+	r.log.Info("homepage page id discovered", "page_id", pageID)
+	return true
+}
+
+// autoMapPostersToCategories pairs each av_slide poster with a category whose WP slug appears inside the image slug.
+func (r *runner) autoMapPostersToCategories(ctx context.Context) {
+	if len(r.cfg.Homepage.PosterLinks) > 0 {
+		return
+	}
+	slides, err := r.home.listSlides(ctx, r.cfg.Homepage.PageID)
 	if err != nil {
 		r.log.Warn("homepage discovery: list-slides failed — poster updates disabled this run", "err", err)
 		return
 	}
 	mapping := map[string]string{}
-	for _, s := range slides {
-		if s.Type != "av_slide" || s.ImageID == "" {
-			continue
-		}
-		var imgID int
-		if _, err := fmt.Sscanf(s.ImageID, "%d", &imgID); err != nil || imgID <= 0 {
-			continue
-		}
-		slug, err := r.home.mediaSlug(dctx, imgID)
-		if err != nil || slug == "" {
-			continue
-		}
-		// Match: image slug contains category slug (e.g. `hemayat-khedmat-poster` → `hemayat-khedmat`).
-		for _, cat := range r.cfg.Publishing.Categories {
-			if cat.Slug == "" {
-				continue
-			}
-			if !strings.Contains(slug, cat.Slug) {
-				continue
-			}
-			if existing, dup := mapping[cat.Hashtag]; dup {
-				r.log.Warn("homepage discovery: more than one poster matched a category — keeping the first",
-					"hashtag", cat.Hashtag, "first_uid", existing, "skipped_uid", s.UID, "image_slug", slug)
-				continue
-			}
-			mapping[cat.Hashtag] = s.UID
-			r.log.Info("poster auto-mapped",
-				"hashtag", cat.Hashtag, "slide_uid", s.UID, "image_id", imgID, "image_slug", slug)
-		}
+	for _, slide := range slides {
+		r.mapSlideToCategory(ctx, slide, mapping)
 	}
 	r.cfg.Homepage.PosterLinks = mapping
 	if len(mapping) == 0 {
 		r.log.Info("homepage discovery: no poster image slug matched any category — name posters like \"<category-slug>-something.jpg\" to enable")
+	}
+}
+
+// mapSlideToCategory records the first category whose slug appears in the slide's image slug; later dupes are warned and skipped.
+func (r *runner) mapSlideToCategory(ctx context.Context, slide Slide, mapping map[string]string) {
+	if slide.Type != "av_slide" || slide.ImageID == "" {
+		return
+	}
+	var imageID int
+	if _, err := fmt.Sscanf(slide.ImageID, "%d", &imageID); err != nil || imageID <= 0 {
+		return
+	}
+	imageSlug, err := r.home.mediaSlug(ctx, imageID)
+	if err != nil || imageSlug == "" {
+		return
+	}
+	for _, cat := range r.cfg.Publishing.Categories {
+		if cat.Slug == "" || !strings.Contains(imageSlug, cat.Slug) {
+			continue
+		}
+		if firstUID, dup := mapping[cat.Hashtag]; dup {
+			r.log.Warn("homepage discovery: more than one poster matched a category — keeping the first",
+				"hashtag", cat.Hashtag, "first_uid", firstUID, "skipped_uid", slide.UID, "image_slug", imageSlug)
+			continue
+		}
+		mapping[cat.Hashtag] = slide.UID
+		r.log.Info("poster auto-mapped",
+			"hashtag", cat.Hashtag, "slide_uid", slide.UID, "image_id", imageID, "image_slug", imageSlug)
 	}
 }
 
