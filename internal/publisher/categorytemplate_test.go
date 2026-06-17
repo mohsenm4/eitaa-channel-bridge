@@ -66,11 +66,11 @@ func TestParseSimpleReport_KeepsBodyDropsMarkersAndHashtags(t *testing.T) {
 	}
 }
 
-func TestParseSimpleReport_StripsChannelSignature(t *testing.T) {
+func TestParseSimpleReport_DropsEverythingAfterHashtagLine(t *testing.T) {
 	msg := tavanmandRouted()
-	msg.Message.Text = tavanmandSampleMsg + "\n\n🟢 کانال رسمی موسسه خدمات اجتماعی فاطمیون\n🆔 https://eitaa.com/fatemyoon_ir"
+	msg.Message.Text = tavanmandSampleMsg + "\n\n🔰 کانال رسمی موسسه خدمات اجتماعی فاطمیون\n🆔 https://eitaa.com/fatemyoon_ir\nهر خط دیگه‌ای بعد از هشتگ"
 	body := parseSimpleReport(msg, 0)["BODY"]
-	for _, banned := range []string{"کانال رسمی", "eitaa.com", "🆔", "🟢"} {
+	for _, banned := range []string{"کانال رسمی", "eitaa.com", "🆔", "🔰", "هر خط دیگه"} {
 		if strings.Contains(body, banned) {
 			t.Errorf("BODY should not contain %q\n--- body ---\n%s", banned, body)
 		}
