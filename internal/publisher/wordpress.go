@@ -603,11 +603,11 @@ func (p *WordPress) renderHTML(msg router.Routed) string {
 // renderBodyLines emits a <p> per content line, stripping markers, hashtag
 // lines, and the channel sign-off block. Channel admins use two conventions:
 //
-//   1. Sign-off AFTER hashtags  → the "break on first hashtag-only line"
-//      below catches the signature block in one shot.
-//   2. Sign-off BEFORE hashtags → handled by isChannelSignatureLine, which
-//      drops the 🟢-prefixed channel-name line, the 🆔-prefixed URL line,
-//      and anything containing "eitaa.com/" (the canonical invite link).
+//  1. Sign-off AFTER hashtags  → the "break on first hashtag-only line"
+//     below catches the signature block in one shot.
+//  2. Sign-off BEFORE hashtags → handled by isChannelSignatureLine, which
+//     drops the 🟢-prefixed channel-name line, the 🆔-prefixed URL line,
+//     and anything containing "eitaa.com/" (the canonical invite link).
 //
 // Either way, the published post never carries the channel signature.
 func (p *WordPress) renderBodyLines(msg router.Routed) string {
@@ -645,8 +645,8 @@ func (p *WordPress) renderBodyLines(msg router.Routed) string {
 // isChannelSignatureLine returns true for lines that look like the Eitaa
 // channel sign-off footer admins paste at the bottom of messages. Catches:
 //
-//   🟢 کانال رسمی <name>           ← green-dot channel-name line
-//   🆔 https://eitaa.com/<slug>    ← id-square invite-link line
+//	🟢 کانال رسمی <name>           ← green-dot channel-name line
+//	🆔 https://eitaa.com/<slug>    ← id-square invite-link line
 //
 // plus any line containing an eitaa.com/ URL, which covers handwritten
 // variants without the emoji prefix.

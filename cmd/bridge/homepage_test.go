@@ -170,4 +170,3 @@ func TestProcessOne_NoHomepageClient_NoCalls(t *testing.T) {
 		t.Errorf("expected zero calls, got %d", got)
 	}
 }
-
