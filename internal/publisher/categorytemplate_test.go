@@ -66,6 +66,17 @@ func TestParseSimpleReport_KeepsBodyDropsMarkersAndHashtags(t *testing.T) {
 	}
 }
 
+func TestParseSimpleReport_DropsEverythingAfterHashtagLine(t *testing.T) {
+	msg := tavanmandRouted()
+	msg.Message.Text = tavanmandSampleMsg + "\n\n🔰 کانال رسمی موسسه خدمات اجتماعی فاطمیون\n🆔 https://eitaa.com/fatemyoon_ir\nهر خط دیگه‌ای بعد از هشتگ"
+	body := parseSimpleReport(msg, 0)["BODY"]
+	for _, banned := range []string{"کانال رسمی", "eitaa.com", "🆔", "🔰", "هر خط دیگه"} {
+		if strings.Contains(body, banned) {
+			t.Errorf("BODY should not contain %q\n--- body ---\n%s", banned, body)
+		}
+	}
+}
+
 func TestRenderCategoryTemplate_TavanmandsaziEndToEnd(t *testing.T) {
 	tmpl, ok := loadCategoryTemplate("tavanmandsazi")
 	if !ok {
@@ -144,28 +155,6 @@ func TestHemayatKhedmat_RoutesToSimpleTemplateAndParser(t *testing.T) {
 		t.Fatal("expected non-nil vars for hemayat-khedmat")
 	}
 	tmpl, _ := loadCategoryTemplate("hemayat-khedmat")
-	out := renderCategoryTemplate(tmpl, vars)
-	if strings.Contains(out, "{{") {
-		t.Errorf("unfilled placeholder remains:\n%s", out)
-	}
-	if !strings.Contains(out, "📅 تاریخ برگزاری: 1404/08/15") {
-		t.Errorf("date line missing:\n%s", out)
-	}
-}
-
-func TestJalasatVahedha_RoutesToSimpleTemplateAndParser(t *testing.T) {
-	msg := tavanmandRouted()
-	msg.Category = "jalasat-vahedha"
-	msg.CategoryFa = "گزارش جلسات واحدها"
-
-	if _, ok := loadCategoryTemplate("jalasat-vahedha"); !ok {
-		t.Fatal("jalasat-vahedha.tmpl not embedded")
-	}
-	vars := extractCategoryVars(msg, 222)
-	if vars == nil {
-		t.Fatal("expected non-nil vars for jalasat-vahedha")
-	}
-	tmpl, _ := loadCategoryTemplate("jalasat-vahedha")
 	out := renderCategoryTemplate(tmpl, vars)
 	if strings.Contains(out, "{{") {
 		t.Errorf("unfilled placeholder remains:\n%s", out)

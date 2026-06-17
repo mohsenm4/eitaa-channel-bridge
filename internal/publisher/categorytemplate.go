@@ -31,8 +31,7 @@ func renderCategoryTemplate(tmpl string, vars map[string]string) string {
 // extractCategoryVars returns the placeholder map for a category, or nil to skip templating.
 func extractCategoryVars(msg router.Routed, featuredID int) map[string]string {
 	switch msg.Category {
-	case "qarz-al-hasaneh", "tavanmandsazi", "rezvan",
-		"hemayat-khedmat", "jalasat-vahedha":
+	case "qarz-al-hasaneh", "tavanmandsazi", "rezvan", "hemayat-khedmat":
 		return parseSimpleReport(msg, featuredID)
 	}
 	return nil
@@ -48,7 +47,11 @@ func parseSimpleReport(msg router.Routed, _ int) map[string]string {
 	}
 }
 
-// stripMarkersAndHashtags drops 📌/📅/📝/🟩 lines and hashtag-only lines from the message text.
+// stripMarkersAndHashtags drops 📌/📅/📝/🟩 marker lines. It also stops at
+// the first hashtag-only line — anything below the hashtag block (channel
+// sign-off, ID footer, promo links, …) is treated as trailer noise and
+// excluded from the body. A sign-off pasted ABOVE the hashtags is still
+// caught by isChannelSignatureLine.
 func stripMarkersAndHashtags(text string) string {
 	var b strings.Builder
 	for _, line := range strings.Split(text, "\n") {
@@ -61,6 +64,9 @@ func stripMarkersAndHashtags(text string) string {
 			continue
 		}
 		if isHashtagOnlyLine(t) {
+			break
+		}
+		if isChannelSignatureLine(t) {
 			continue
 		}
 		b.WriteString(t)

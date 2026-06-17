@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
+	"fmt"
 	"log/slog"
 	"math"
 	"os"
@@ -29,6 +30,7 @@ type runner struct {
 	pub    publisher.Publisher
 	client *eitaa.Client
 	rt     *router.Router
+	home   *homepageClient
 }
 
 func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
@@ -37,6 +39,10 @@ func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
 		return nil, err
 	}
 	pub := publisher.NewWordPress(cfg.WordPress, log)
+	var home *homepageClient
+	if cfg.Homepage.PageID > 0 {
+		home = newHomepageClient(cfg.WordPress.URL, cfg.WordPress.Username, cfg.WordPress.AppPassword)
+	}
 	return &runner{
 		cfg:    cfg,
 		log:    log,
@@ -44,6 +50,7 @@ func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
 		pub:    pub,
 		client: eitaa.New(),
 		rt:     router.New(cfg.Source.Channel, cfg.Publishing.Categories, cfg.Publishing.Default),
+		home:   home,
 	}, nil
 }
 
@@ -120,7 +127,123 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 		"id", m.ID, "wp_id", postID,
 		"category", routed.CategoryFa,
 		"title", utils.DisplayTitle(routed.Title, 50))
+	r.maybeUpdateHomepagePoster(ctx, routed, postID)
 	return true
+}
+
+// discoverHomepage fills in cfg.Homepage.{PageID,PosterLinks} from WordPress
+// itself so the operator doesn't have to write either into .env. Manual entries
+// always win — discovery only populates the unset fields. A failure here is
+// non-fatal: the bridge logs and continues publishing without poster updates.
+func (r *runner) discoverHomepage(ctx context.Context) {
+	if r.home == nil {
+		// No app password / no WP target → homepage features disabled at startup.
+		if r.cfg.WordPress.URL == "" || r.cfg.WordPress.Username == "" {
+			return
+		}
+		r.home = newHomepageClient(r.cfg.WordPress.URL, r.cfg.WordPress.Username, r.cfg.WordPress.AppPassword)
+	}
+	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	if r.cfg.Homepage.PageID == 0 {
+		pid, err := r.home.detectFrontPageID(dctx)
+		if err != nil {
+			r.log.Warn("homepage discovery: front-page id lookup failed — set HOMEPAGE_PAGE_ID manually to enable poster updates",
+				"err", err)
+			r.home = nil
+			return
+		}
+		if pid == 0 {
+			r.log.Info("homepage discovery: site uses the blog layout, no static front page — skipping")
+			r.home = nil
+			return
+		}
+		r.cfg.Homepage.PageID = pid
+		r.log.Info("homepage page id discovered", "page_id", pid)
+	}
+
+	if len(r.cfg.Homepage.PosterLinks) > 0 {
+		return // manual map wins; trust the operator.
+	}
+	slides, err := r.home.listSlides(dctx, r.cfg.Homepage.PageID)
+	if err != nil {
+		r.log.Warn("homepage discovery: list-slides failed — poster updates disabled this run", "err", err)
+		return
+	}
+	mapping := map[string]string{}
+	for _, s := range slides {
+		if s.Type != "av_slide" || s.ImageID == "" {
+			continue
+		}
+		var imgID int
+		if _, err := fmt.Sscanf(s.ImageID, "%d", &imgID); err != nil || imgID <= 0 {
+			continue
+		}
+		slug, err := r.home.mediaSlug(dctx, imgID)
+		if err != nil || slug == "" {
+			continue
+		}
+		// Match if the image slug contains the category's WP slug. So
+		// `hemayat-khedmat-poster` matches category slug `hemayat-khedmat`,
+		// and `qarz-al-hasaneh.png` (no suffix) matches `qarz-al-hasaneh`.
+		for _, cat := range r.cfg.Publishing.Categories {
+			if cat.Slug == "" {
+				continue
+			}
+			if !strings.Contains(slug, cat.Slug) {
+				continue
+			}
+			if existing, dup := mapping[cat.Hashtag]; dup {
+				r.log.Warn("homepage discovery: more than one poster matched a category — keeping the first",
+					"hashtag", cat.Hashtag, "first_uid", existing, "skipped_uid", s.UID, "image_slug", slug)
+				continue
+			}
+			mapping[cat.Hashtag] = s.UID
+			r.log.Info("poster auto-mapped",
+				"hashtag", cat.Hashtag, "slide_uid", s.UID, "image_id", imgID, "image_slug", slug)
+		}
+	}
+	r.cfg.Homepage.PosterLinks = mapping
+	if len(mapping) == 0 {
+		r.log.Info("homepage discovery: no poster image slug matched any category — name posters like \"<category-slug>-something.jpg\" to enable")
+	}
+}
+
+// maybeUpdateHomepagePoster rewrites the link of the homepage poster slide
+// mapped to this routing hashtag so it points at the freshly-published post.
+// Lookup is by routed.Category (slug) so renaming the WP-side label can't
+// break the wiring. Non-fatal: the post is already on WP; if this fails the
+// poster just keeps its prior link until the next publish in the same category.
+func (r *runner) maybeUpdateHomepagePoster(ctx context.Context, routed router.Routed, postID int) {
+	if r.home == nil || len(r.cfg.Homepage.PosterLinks) == 0 || r.cfg.Homepage.PageID <= 0 {
+		return
+	}
+	uid, ok := r.cfg.Homepage.PosterLinks[routed.Category]
+	if !ok {
+		// Try matching by hashtag too — operator may have keyed POSTER_LINKS
+		// off the channel hashtag rather than the WP slug.
+		for _, tag := range routed.Hashtags {
+			if u, found := r.cfg.Homepage.PosterLinks[tag]; found {
+				uid = u
+				ok = true
+				break
+			}
+		}
+	}
+	if !ok {
+		return
+	}
+	link := fmt.Sprintf("%s/?p=%d", strings.TrimRight(r.cfg.WordPress.URL, "/"), postID)
+	uctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := r.home.updatePosterLink(uctx, r.cfg.Homepage.PageID, uid, link); err != nil {
+		r.log.Warn("homepage poster update failed — post is live, poster keeps prior link",
+			"category", routed.Category, "slide_uid", uid, "wp_id", postID, "err", err)
+		return
+	}
+	r.log.Info("homepage poster updated",
+		"category", routed.Category, "slide_uid", uid, "wp_id", postID, "link", link)
 }
 
 // markSeenAndPersist Marks the message as seen and flushes the state file.
@@ -289,6 +412,7 @@ func (r *runner) backfill(ctx context.Context, max int) {
 
 func (r *runner) Run(ctx context.Context) {
 	go r.runHealthcheckLoop(ctx)
+	r.discoverHomepage(ctx)
 	if r.store.Count(r.cfg.Source.Channel) == 0 && r.cfg.Source.BackfillMax > 0 {
 		r.backfill(ctx, r.cfg.Source.BackfillMax)
 	}
@@ -345,6 +469,8 @@ func runRun(log *slog.Logger, args []string) {
 		"categories", strings.Join(categoryTags(cfg.Publishing.Categories), ","),
 		"inbox", strings.Join(cfg.Publishing.InboxHashtags, ","),
 		"skip", strings.Join(cfg.Publishing.SkipHashtags, ","),
+		"homepage_page", cfg.Homepage.PageID,
+		"posters", len(cfg.Homepage.PosterLinks),
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

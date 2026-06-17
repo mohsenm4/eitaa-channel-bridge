@@ -207,6 +207,37 @@ func TestRenderBodyLines_StopsAtHashtagBlock(t *testing.T) {
 	}
 }
 
+// TestRenderBodyLines_StripsSignatureBeforeHashtags covers the real-world
+// case where the channel admin pastes the sign-off block BEFORE the routing
+// hashtags (or omits the hashtags from the body entirely). The break-on-
+// hashtag rule can't catch this, so isChannelSignatureLine has to drop the
+// 🟢/🆔/eitaa.com lines on its own.
+func TestRenderBodyLines_StripsSignatureBeforeHashtags(t *testing.T) {
+	r := router.Routed{
+		Message: eitaa.Message{
+			Channel: "tesssst",
+			ID:      10,
+			Text: "🥩 توزیع گوشت قربانی:\nتوزیع ۲۵ بسته گوشت قربانی...\n\n" +
+				"🟢 کانال رسمی موسسه خدمات اجتماعی فاطمیون\n" +
+				"🆔 https://eitaa.com/fatemyoon_ir",
+		},
+		Title:    "توزیع گوشت قربانی",
+		Hashtags: []string{"حمایت_خدمت"},
+	}
+	got := testWP().renderBodyLines(r)
+	if !strings.Contains(got, "توزیع ۲۵ بسته") {
+		t.Error("body line was lost")
+	}
+	if !strings.Contains(got, "🥩 توزیع گوشت قربانی") {
+		t.Error("emoji-prefixed body line should NOT be treated as signature")
+	}
+	for _, banned := range []string{"کانال رسمی", "eitaa.com", "🆔", "🟢"} {
+		if strings.Contains(got, banned) {
+			t.Errorf("expected %q to be dropped, got:\n%s", banned, got)
+		}
+	}
+}
+
 // TestApplyTemplate_SingleBlockClonesStructure covers the "روضه خانگی"
 // style template — a single [vc_column_text] block. The whole outer
 // structure must be preserved and only the body content replaced.

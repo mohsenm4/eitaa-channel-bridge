@@ -19,6 +19,7 @@ type Config struct {
 	Source     Source
 	Publishing Publishing
 	WordPress  WordPressTarget
+	Homepage   Homepage
 	Storage    Storage
 }
 
@@ -61,6 +62,18 @@ type WordPressTarget struct {
 	AppPassword string
 	PostType    string
 	Status      string
+}
+
+// Homepage groups settings that drive auto-updates to the home page after each
+// publish (poster link updates, news rotation). Empty fields disable the
+// corresponding feature.
+type Homepage struct {
+	// PageID is the WP page id whose layout owns the poster slideshow / news
+	// rotation. Empty (0) disables every homepage feature.
+	PageID int
+	// PosterLinks maps a routing hashtag to the av_uid of the av_slide whose
+	// link should be rewritten to the freshly-published post URL.
+	PosterLinks map[string]string
 }
 
 type Storage struct {
@@ -130,6 +143,17 @@ func Load(envPath string) (*Config, error) {
 	cfg.WordPress.AppPassword = envStr("WP_APP_PASSWORD")
 	cfg.WordPress.PostType = envStr("WP_POST_TYPE")
 	cfg.WordPress.Status = envStr("WP_STATUS")
+
+	hpID, err := envInt("HOMEPAGE_PAGE_ID")
+	if err != nil {
+		return nil, err
+	}
+	cfg.Homepage.PageID = hpID
+	pl, err := parseHashtagUIDMap(envStr("POSTER_LINKS"), "POSTER_LINKS")
+	if err != nil {
+		return nil, err
+	}
+	cfg.Homepage.PosterLinks = pl
 
 	cfg.Storage.SeenFile = envStr("SEEN_FILE")
 	cfg.Storage.ArchiveFile = envStr("ARCHIVE_FILE")
@@ -219,6 +243,33 @@ func parseCategories(s string) ([]Category, error) {
 			Slug:    strings.TrimSpace(fields[1]),
 			Label:   strings.TrimSpace(fields[2]),
 		})
+	}
+	return out, nil
+}
+
+// parseHashtagUIDMap parses a comma-separated "hashtag|av_uid" list into a map.
+// Empty input → empty map. envName is used only for error messages.
+func parseHashtagUIDMap(s, envName string) (map[string]string, error) {
+	if s == "" {
+		return nil, nil
+	}
+	out := map[string]string{}
+	for i, p := range strings.Split(s, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		fields := strings.Split(p, "|")
+		if len(fields) != 2 {
+			return nil, fmt.Errorf(
+				"%s entry %d (%q): expected \"hashtag|av_uid\"", envName, i, p)
+		}
+		tag := strings.TrimPrefix(strings.TrimSpace(fields[0]), "#")
+		uid := strings.TrimSpace(fields[1])
+		if tag == "" || uid == "" {
+			return nil, fmt.Errorf("%s entry %d (%q): both hashtag and uid must be non-empty", envName, i, p)
+		}
+		out[tag] = uid
 	}
 	return out, nil
 }
