@@ -47,7 +47,8 @@ func parseSimpleReport(msg router.Routed, _ int) map[string]string {
 	}
 }
 
-// stripMarkersAndHashtags drops 📌/📅/📝/🟩 lines and hashtag-only lines from the message text.
+// stripMarkersAndHashtags drops 📌/📅/📝/🟩 lines, hashtag-only lines, and
+// channel sign-off lines (🟢/🆔/eitaa.com URLs) from the message text.
 func stripMarkersAndHashtags(text string) string {
 	var b strings.Builder
 	for _, line := range strings.Split(text, "\n") {
@@ -60,6 +61,9 @@ func stripMarkersAndHashtags(text string) string {
 			continue
 		}
 		if isHashtagOnlyLine(t) {
+			continue
+		}
+		if isChannelSignatureLine(t) {
 			continue
 		}
 		b.WriteString(t)
