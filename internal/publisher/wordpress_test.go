@@ -222,7 +222,7 @@ func TestRenderBodyLines_StripsSignatureBeforeHashtags(t *testing.T) {
 				"🆔 https://eitaa.com/fatemyoon_ir",
 		},
 		Title:    "توزیع گوشت قربانی",
-		Hashtags: []string{"حمایت_و_خدمت"},
+		Hashtags: []string{"حمایت_خدمت"},
 	}
 	got := testWP().renderBodyLines(r)
 	if !strings.Contains(got, "توزیع ۲۵ بسته") {
