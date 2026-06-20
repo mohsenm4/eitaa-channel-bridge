@@ -141,8 +141,7 @@ func (s *Store) MarkDeleted(channel string, id int) {
 	s.data[channel][id] = e
 }
 
-// TrackedInRange returns ids of entries with a WP post (PostID>0), within [minID,maxID], not yet marked Deleted.
-// These are the candidates for edit / deletion comparison against the latest fetched page.
+// TrackedInRange returns non-deleted, published entry ids in [minID,maxID] — candidates for edit/deletion comparison.
 func (s *Store) TrackedInRange(channel string, minID, maxID int) []int {
 	if minID > maxID {
 		return nil
@@ -161,8 +160,7 @@ func (s *Store) TrackedInRange(channel string, minID, maxID int) []int {
 	return out
 }
 
-// LatestTrackedTS returns the highest TS among non-deleted entries with a WP post — used to pick hot/cold polling.
-// Returns zero time if there are no tracked entries.
+// LatestTrackedTS returns the newest TS among non-deleted published entries (zero time if none) for hot/cold polling.
 func (s *Store) LatestTrackedTS(channel string) time.Time {
 	var latest int64
 	for _, e := range s.data[channel] {
@@ -179,8 +177,7 @@ func (s *Store) LatestTrackedTS(channel string) time.Time {
 	return time.Unix(latest, 0)
 }
 
-// FindRecentDuplicate scans channel for a prior entry with the same fp whose ts is within window of msgTime.
-// Returns the original eitaa id + post id if found. Empty fp or zero window short-circuits to "not found".
+// FindRecentDuplicate returns the prior eitaa/post id with the same fp inside window; empty fp or zero window short-circuits.
 func (s *Store) FindRecentDuplicate(channel, fp string, msgTime time.Time, window time.Duration) (eitaaID, postID int, ok bool) {
 	if fp == "" || window <= 0 {
 		return 0, 0, false

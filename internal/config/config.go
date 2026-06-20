@@ -32,13 +32,12 @@ type Source struct {
 	// EditWindow: how long after a message is published to keep polling fast for edits/deletes.
 	EditWindow  time.Duration
 	BackfillMax int
-	// HealthcheckURL: if set, the bridge pings this URL on start and then every HealthcheckInterval so an
-	// external dead-man's-switch service (e.g. healthchecks.io) can alert when the bridge falls silent.
-	// Empty disables the feature.
+	// HealthcheckURL: dead-man's-switch ping target (e.g. healthchecks.io); empty disables.
 	HealthcheckURL string
-	// HealthcheckInterval: how often the heartbeat goroutine pings HealthcheckURL. Must be shorter than
-	// the Period configured at the dead-man's-switch service so a single missed ping does NOT alert.
+	// HealthcheckInterval: must be shorter than the configured dead-man's-switch Period to survive a single missed ping.
 	HealthcheckInterval time.Duration
+	// HealthcheckFailureThreshold: consecutive publish failures that flip the check to DOWN via /fail. Zero disables.
+	HealthcheckFailureThreshold int
 }
 
 type Publishing struct {
@@ -64,15 +63,11 @@ type WordPressTarget struct {
 	Status      string
 }
 
-// Homepage groups settings that drive auto-updates to the home page after each
-// publish (poster link updates, news rotation). Empty fields disable the
-// corresponding feature.
+// Homepage groups auto-update settings for the home page; empty fields disable each feature.
 type Homepage struct {
-	// PageID is the WP page id whose layout owns the poster slideshow / news
-	// rotation. Empty (0) disables every homepage feature.
+	// PageID is the WP page id that owns the poster slideshow; 0 disables every homepage feature.
 	PageID int
-	// PosterLinks maps a routing hashtag to the av_uid of the av_slide whose
-	// link should be rewritten to the freshly-published post URL.
+	// PosterLinks maps a routing hashtag to the av_uid of the slide whose link gets rewritten on publish.
 	PosterLinks map[string]string
 }
 
@@ -81,8 +76,7 @@ type Storage struct {
 	ArchiveFile string
 }
 
-// Load reads env vars, optionally seeded by a .env file (pass "" to skip).
-// A missing .env is fine; real env vars always win over .env values.
+// Load reads env vars, optionally seeded by a .env file (pass "" to skip); real env vars always win.
 func Load(envPath string) (*Config, error) {
 	if envPath != "" {
 		if err := godotenv.Load(envPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -119,6 +113,14 @@ func Load(envPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Source.HealthcheckInterval = hi
+	hft, err := envInt("HEALTHCHECK_FAIL_THRESHOLD")
+	if err != nil {
+		return nil, err
+	}
+	if hft == 0 {
+		hft = 3
+	}
+	cfg.Source.HealthcheckFailureThreshold = hft
 
 	cats, err := parseCategories(envStr("CATEGORIES"))
 	if err != nil {
@@ -247,8 +249,7 @@ func parseCategories(s string) ([]Category, error) {
 	return out, nil
 }
 
-// parseHashtagUIDMap parses a comma-separated "hashtag|av_uid" list into a map.
-// Empty input → empty map. envName is used only for error messages.
+// parseHashtagUIDMap parses a comma-separated "hashtag|av_uid" list; empty input returns a nil map.
 func parseHashtagUIDMap(s, envName string) (map[string]string, error) {
 	if s == "" {
 		return nil, nil

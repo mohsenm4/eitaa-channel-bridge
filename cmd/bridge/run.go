@@ -31,6 +31,11 @@ type runner struct {
 	client *eitaa.Client
 	rt     *router.Router
 	home   *homepageClient
+
+	// publishFailStreak counts consecutive Publish failures; flips healthcheck to DOWN when it crosses the threshold.
+	publishFailStreak int
+	// publishFailAlerted is true after we've sent the /fail ping for the current streak — avoids spamming the ping.
+	publishFailAlerted bool
 }
 
 func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
@@ -56,8 +61,7 @@ func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
 
 func (r *runner) Close() error { return r.pub.Close() }
 
-// processBatch returns how many messages were handled (published or deliberately skipped).
-// Publish failures are NOT counted, so the next tick retries them.
+// processBatch returns how many messages were handled (published or skipped); publish failures aren't counted so the next tick retries.
 func (r *runner) processBatch(ctx context.Context, msgs []eitaa.Message) int {
 	processed := 0
 	for _, m := range msgs {
@@ -71,8 +75,7 @@ func (r *runner) processBatch(ctx context.Context, msgs []eitaa.Message) int {
 	return processed
 }
 
-// processOne returns true if the message reached a terminal state (published / inbox / skip).
-// Returns false for transient failures so the next tick retries.
+// processOne returns true on a terminal state (published / inbox / skip); false on transient failures for retry next tick.
 func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 	routed := r.rt.Route(m)
 
@@ -110,8 +113,10 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 	postID, err := r.pub.Publish(ctx, routed)
 	if err != nil {
 		r.log.Error("publish failed", "id", m.ID, "err", err)
+		r.recordPublishFailure(ctx)
 		return false
 	}
+	r.recordPublishSuccess()
 
 	// Persist seen-state immediately so a crash before end-of-tick can't re-publish (issue #6).
 	r.markPublishedAndPersist(m.ID, postID, fp, m.Date)
@@ -131,78 +136,68 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 	return true
 }
 
-// discoverHomepage fills in cfg.Homepage.{PageID,PosterLinks} from WordPress
-// itself so the operator doesn't have to write either into .env. Manual entries
-// always win — discovery only populates the unset fields. A failure here is
-// non-fatal: the bridge logs and continues publishing without poster updates.
+const homepageDiscoveryTimeout = 30 * time.Second
+
+// discoverHomepage auto-fills cfg.Homepage.{PageID,PosterLinks} from WP; manual .env entries win and failures are non-fatal.
 func (r *runner) discoverHomepage(ctx context.Context) {
-	if r.home == nil {
-		// No app password / no WP target → homepage features disabled at startup.
-		if r.cfg.WordPress.URL == "" || r.cfg.WordPress.Username == "" {
-			return
-		}
-		r.home = newHomepageClient(r.cfg.WordPress.URL, r.cfg.WordPress.Username, r.cfg.WordPress.AppPassword)
+	if !r.ensureHomepageClient() {
+		return
 	}
-	dctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, homepageDiscoveryTimeout)
 	defer cancel()
 
-	if r.cfg.Homepage.PageID == 0 {
-		pid, err := r.home.detectFrontPageID(dctx)
-		if err != nil {
-			r.log.Warn("homepage discovery: front-page id lookup failed — set HOMEPAGE_PAGE_ID manually to enable poster updates",
-				"err", err)
-			r.home = nil
-			return
-		}
-		if pid == 0 {
-			r.log.Info("homepage discovery: site uses the blog layout, no static front page — skipping")
-			r.home = nil
-			return
-		}
-		r.cfg.Homepage.PageID = pid
-		r.log.Info("homepage page id discovered", "page_id", pid)
+	if !r.discoverFrontPageID(ctx) {
+		return
 	}
+	r.autoMapPostersToCategories(ctx)
+}
 
-	if len(r.cfg.Homepage.PosterLinks) > 0 {
-		return // manual map wins; trust the operator.
+// ensureHomepageClient lazily builds r.home; returns false when WP isn't configured.
+func (r *runner) ensureHomepageClient() bool {
+	if r.home != nil {
+		return true
 	}
-	slides, err := r.home.listSlides(dctx, r.cfg.Homepage.PageID)
+	if r.cfg.WordPress.URL == "" || r.cfg.WordPress.Username == "" {
+		return false
+	}
+	r.home = newHomepageClient(r.cfg.WordPress.URL, r.cfg.WordPress.Username, r.cfg.WordPress.AppPassword)
+	return true
+}
+
+// discoverFrontPageID asks WP for the static front-page id; returns false to disable homepage features this run.
+func (r *runner) discoverFrontPageID(ctx context.Context) bool {
+	if r.cfg.Homepage.PageID != 0 {
+		return true
+	}
+	pageID, err := r.home.detectFrontPageID(ctx)
+	if err != nil {
+		r.log.Warn("homepage discovery: front-page id lookup failed — set HOMEPAGE_PAGE_ID manually to enable poster updates", "err", err)
+		r.home = nil
+		return false
+	}
+	if pageID == 0 {
+		r.log.Info("homepage discovery: site uses the blog layout, no static front page — skipping")
+		r.home = nil
+		return false
+	}
+	r.cfg.Homepage.PageID = pageID
+	r.log.Info("homepage page id discovered", "page_id", pageID)
+	return true
+}
+
+// autoMapPostersToCategories pairs each av_slide poster with a category whose WP slug appears inside the image slug.
+func (r *runner) autoMapPostersToCategories(ctx context.Context) {
+	if len(r.cfg.Homepage.PosterLinks) > 0 {
+		return
+	}
+	slides, err := r.home.listSlides(ctx, r.cfg.Homepage.PageID)
 	if err != nil {
 		r.log.Warn("homepage discovery: list-slides failed — poster updates disabled this run", "err", err)
 		return
 	}
 	mapping := map[string]string{}
-	for _, s := range slides {
-		if s.Type != "av_slide" || s.ImageID == "" {
-			continue
-		}
-		var imgID int
-		if _, err := fmt.Sscanf(s.ImageID, "%d", &imgID); err != nil || imgID <= 0 {
-			continue
-		}
-		slug, err := r.home.mediaSlug(dctx, imgID)
-		if err != nil || slug == "" {
-			continue
-		}
-		// Match if the image slug contains the category's WP slug. So
-		// `hemayat-khedmat-poster` matches category slug `hemayat-khedmat`,
-		// and `qarz-al-hasaneh.png` (no suffix) matches `qarz-al-hasaneh`.
-		for _, cat := range r.cfg.Publishing.Categories {
-			if cat.Slug == "" {
-				continue
-			}
-			if !strings.Contains(slug, cat.Slug) {
-				continue
-			}
-			if existing, dup := mapping[cat.Hashtag]; dup {
-				r.log.Warn("homepage discovery: more than one poster matched a category — keeping the first",
-					"hashtag", cat.Hashtag, "first_uid", existing, "skipped_uid", s.UID, "image_slug", slug)
-				continue
-			}
-			mapping[cat.Hashtag] = s.UID
-			r.log.Info("poster auto-mapped",
-				"hashtag", cat.Hashtag, "slide_uid", s.UID, "image_id", imgID, "image_slug", slug)
-		}
+	for _, slide := range slides {
+		r.mapSlideToCategory(ctx, slide, mapping)
 	}
 	r.cfg.Homepage.PosterLinks = mapping
 	if len(mapping) == 0 {
@@ -210,19 +205,42 @@ func (r *runner) discoverHomepage(ctx context.Context) {
 	}
 }
 
-// maybeUpdateHomepagePoster rewrites the link of the homepage poster slide
-// mapped to this routing hashtag so it points at the freshly-published post.
-// Lookup is by routed.Category (slug) so renaming the WP-side label can't
-// break the wiring. Non-fatal: the post is already on WP; if this fails the
-// poster just keeps its prior link until the next publish in the same category.
+// mapSlideToCategory records the first category whose slug appears in the slide's image slug; later dupes are warned and skipped.
+func (r *runner) mapSlideToCategory(ctx context.Context, slide Slide, mapping map[string]string) {
+	if slide.Type != "av_slide" || slide.ImageID == "" {
+		return
+	}
+	var imageID int
+	if _, err := fmt.Sscanf(slide.ImageID, "%d", &imageID); err != nil || imageID <= 0 {
+		return
+	}
+	imageSlug, err := r.home.mediaSlug(ctx, imageID)
+	if err != nil || imageSlug == "" {
+		return
+	}
+	for _, cat := range r.cfg.Publishing.Categories {
+		if cat.Slug == "" || !strings.Contains(imageSlug, cat.Slug) {
+			continue
+		}
+		if firstUID, dup := mapping[cat.Hashtag]; dup {
+			r.log.Warn("homepage discovery: more than one poster matched a category — keeping the first",
+				"hashtag", cat.Hashtag, "first_uid", firstUID, "skipped_uid", slide.UID, "image_slug", imageSlug)
+			continue
+		}
+		mapping[cat.Hashtag] = slide.UID
+		r.log.Info("poster auto-mapped",
+			"hashtag", cat.Hashtag, "slide_uid", slide.UID, "image_id", imageID, "image_slug", imageSlug)
+	}
+}
+
+// maybeUpdateHomepagePoster repoints the matching homepage poster's link at the freshly-published post; non-fatal on failure.
 func (r *runner) maybeUpdateHomepagePoster(ctx context.Context, routed router.Routed, postID int) {
 	if r.home == nil || len(r.cfg.Homepage.PosterLinks) == 0 || r.cfg.Homepage.PageID <= 0 {
 		return
 	}
 	uid, ok := r.cfg.Homepage.PosterLinks[routed.Category]
 	if !ok {
-		// Try matching by hashtag too — operator may have keyed POSTER_LINKS
-		// off the channel hashtag rather than the WP slug.
+		// Fall back to matching by hashtag in case POSTER_LINKS was keyed off the hashtag, not the slug.
 		for _, tag := range routed.Hashtags {
 			if u, found := r.cfg.Homepage.PosterLinks[tag]; found {
 				uid = u
@@ -246,8 +264,7 @@ func (r *runner) maybeUpdateHomepagePoster(ctx context.Context, routed router.Ro
 		"category", routed.Category, "slide_uid", uid, "wp_id", postID, "link", link)
 }
 
-// markSeenAndPersist Marks the message as seen and flushes the state file.
-// A save failure is logged loudly — the message will be re-processed on restart.
+// markSeenAndPersist marks the message as seen and flushes the state file; save failures are logged loudly.
 func (r *runner) markSeenAndPersist(id int) {
 	r.store.Mark(r.cfg.Source.Channel, id)
 	if err := r.store.Save(); err != nil {
@@ -286,13 +303,7 @@ func (r *runner) tick(ctx context.Context) {
 	}
 }
 
-// syncEditsAndDeletes mirrors author actions in the source channel onto the WP target.
-// For each tracked message (PostID>0) whose ID is still inside the fetched page:
-//   - present in fetch with a different fingerprint → push an edit
-//   - absent from fetch → push a delete (one-shot, idempotent via Deleted flag)
-//
-// Message age does NOT gate this check — EditWindow only controls polling cadence.
-// Late edits / deletes made hours later are still mirrored on the next cold-mode tick.
+// syncEditsAndDeletes mirrors author edits/deletes from the source channel to WP for tracked messages still on the fetched page.
 func (r *runner) syncEditsAndDeletes(ctx context.Context, msgs []eitaa.Message) {
 	if len(msgs) == 0 {
 		return
@@ -306,8 +317,7 @@ func (r *runner) syncEditsAndDeletes(ctx context.Context, msgs []eitaa.Message) 
 		}
 	}
 
-	// Upper bound is unbounded: a deleted "latest" message is missing from the page but its ID > min(fetched),
-	// so we must still consider it. The lower bound is the oldest visible — anything older is off-page (can't tell).
+	// Upper bound is unbounded so a deleted "latest" message (missing from the page but ID > min) is still considered.
 	tracked := r.store.TrackedInRange(r.cfg.Source.Channel, minID, math.MaxInt)
 	if len(tracked) == 0 {
 		return
@@ -323,8 +333,7 @@ func (r *runner) syncEditsAndDeletes(ctx context.Context, msgs []eitaa.Message) 
 	}
 }
 
-// maybeSyncEdit pushes an Update to the target when the fetched message's text fingerprint differs from the stored one.
-// Stored FP is updated only on success, so transient publisher failures get retried next tick.
+// maybeSyncEdit Updates the target when the fetched fingerprint differs; stored FP advances only on success.
 func (r *runner) maybeSyncEdit(ctx context.Context, m eitaa.Message, entry state.Entry) {
 	newFP := fingerprint(m.Text)
 	if entry.FP == newFP {

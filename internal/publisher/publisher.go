@@ -8,8 +8,7 @@ import (
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/router"
 )
 
-// Publisher delivers one routed message. A non-nil error leaves the message un-delivered and retried.
-// Returned postID is the target's post identifier (0 for archive follow-ups).
+// Publisher delivers one routed message; non-nil error means retry. Returned postID is the target's post id (0 for archive follow-ups).
 type Publisher interface {
 	Name() string
 	Publish(ctx context.Context, msg router.Routed) (postID int, err error)

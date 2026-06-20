@@ -47,11 +47,7 @@ func parseSimpleReport(msg router.Routed, _ int) map[string]string {
 	}
 }
 
-// stripMarkersAndHashtags drops 📌/📅/📝/🟩 marker lines. It also stops at
-// the first hashtag-only line — anything below the hashtag block (channel
-// sign-off, ID footer, promo links, …) is treated as trailer noise and
-// excluded from the body. A sign-off pasted ABOVE the hashtags is still
-// caught by isChannelSignatureLine.
+// stripMarkersAndHashtags drops 📌/📅/📝/🟩 lines and stops at the first hashtag-only line; sign-off above hashtags is caught by isChannelSignatureLine.
 func stripMarkersAndHashtags(text string) string {
 	var b strings.Builder
 	for _, line := range strings.Split(text, "\n") {
