@@ -2,6 +2,7 @@ BINARY      := bin/bridge
 PKG         := ./cmd/bridge
 IMAGE       := eitaa-channel-bridge:latest
 COMPOSE     := docker compose
+SERVICE     := eitaa-bridge
 
 .DEFAULT_GOAL := help
 
@@ -85,3 +86,37 @@ shell: ## Exec a shell in the bridge container
 .PHONY: docker-dump
 docker-dump: ## Run a one-shot `bridge dump` in a fresh container
 	$(COMPOSE) run --rm bridge dump
+
+# ── systemd service (production) ───────────────────────────────────
+
+.PHONY: svc-logs
+svc-logs: ## Tail live service logs (journalctl -f)
+	journalctl -u $(SERVICE) -f
+
+.PHONY: svc-logs-today
+svc-logs-today: ## Show today's service logs
+	journalctl -u $(SERVICE) --since today
+
+.PHONY: svc-status
+svc-status: ## Show service status + last log lines
+	systemctl status $(SERVICE)
+
+.PHONY: svc-start
+svc-start: ## Start the service now
+	sudo systemctl start $(SERVICE)
+
+.PHONY: svc-stop
+svc-stop: ## Stop the service now
+	sudo systemctl stop $(SERVICE)
+
+.PHONY: svc-restart
+svc-restart: ## Restart the service (use after rebuilding the binary)
+	sudo systemctl restart $(SERVICE)
+
+.PHONY: svc-enable
+svc-enable: ## Enable + start on boot (and now)
+	sudo systemctl enable --now $(SERVICE)
+
+.PHONY: svc-disable
+svc-disable: ## Disable on boot + stop now
+	sudo systemctl disable --now $(SERVICE)

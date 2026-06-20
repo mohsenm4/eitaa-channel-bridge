@@ -1,0 +1,38 @@
+# systemd unit for running the bridge as a always-on service.
+#
+# Install:
+#   sudo cp deploy/eitaa-bridge.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   make svc-enable           # = systemctl enable --now eitaa-bridge
+#
+# Adjust WorkingDirectory / ExecStart below if you cloned the repo
+# somewhere other than /root/projects/eitaa-channel.
+
+[Unit]
+Description=Eitaa Channel Bridge — republishes an Eitaa channel to WordPress
+Documentation=https://github.com/mohsenm4/eitaa-channel-bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/projects/eitaa-channel
+ExecStart=/root/projects/eitaa-channel/bin/bridge run
+# Reads <WorkingDirectory>/.env automatically (godotenv).
+
+# Keep it alive: restart on crash and on clean exit, with a short backoff.
+Restart=always
+RestartSec=10
+
+# Cap restart storms: if it dies 5 times within 60s, stop trying so the
+# logs stay readable instead of looping forever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Logs go to the journal: view with `journalctl -u eitaa-bridge -f`.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=eitaa-bridge
+
+[Install]
+WantedBy=multi-user.target
