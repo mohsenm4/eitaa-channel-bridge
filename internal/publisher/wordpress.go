@@ -405,6 +405,17 @@ func (p *WordPress) uploadPhoto(ctx context.Context, photoURL, filename string) 
 	if err != nil {
 		return 0, fmt.Errorf("download photo: %w", err)
 	}
+
+	data, contentType, err = maybeCompressImage(data, contentType, maxPhotoBytes, p.log)
+	if err != nil {
+		return 0, fmt.Errorf("compress photo: %w", err)
+	}
+
+	// When a PNG was converted to JPEG, fix the filename extension to match.
+	if contentType == "image/jpeg" && strings.HasSuffix(filename, ".png") {
+		filename = strings.TrimSuffix(filename, ".png") + ".jpg"
+	}
+
 	return p.uploadMedia(ctx, data, contentType, filename)
 }
 
