@@ -31,7 +31,7 @@ func renderCategoryTemplate(tmpl string, vars map[string]string) string {
 // extractCategoryVars returns the placeholder map for a category, or nil to skip templating.
 func extractCategoryVars(msg router.Routed, featuredID int) map[string]string {
 	switch msg.Category {
-	case "qarz-al-hasaneh", "tavanmandsazi", "nojavanan", "hemayat-khedmat":
+	case "qarz-al-hasaneh", "tavanmandsazi", "nojavanan", "hemayat-khedmat", "akhbar-ettelaiyeh":
 		return parseSimpleReport(msg, featuredID)
 	}
 	return nil
