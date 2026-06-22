@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Eitaa Bridge Helper
  * Description: REST endpoints that clone posts (preserving meta) and edit Avia layout for the eitaa-channel-bridge bot.
- * Version:     1.5.0
+ * Version:     1.6.0
  * Author:      Mohsen
  */
 
@@ -88,6 +88,20 @@ add_action('rest_api_init', function () {
             return current_user_can('edit_pages');
         },
         'callback' => 'eitaa_bridge_site_settings',
+    ]);
+
+    // Diagnostic: dump the raw shortcodes for the news-cards section bounded by a heading
+    // text marker, so we can see the real Avia/WPBakery source before writing rotation logic.
+    register_rest_route('eitaa-bridge/v1', '/news-section-source', [
+        'methods'             => 'GET',
+        'permission_callback' => function () {
+            return current_user_can('edit_pages');
+        },
+        'callback' => 'eitaa_bridge_news_section_source',
+        'args'     => [
+            'page_id'       => ['required' => true, 'type' => 'integer'],
+            'heading_text'  => ['type' => 'string', 'default' => 'اخبار و اطلاعیه ها'],
+        ],
     ]);
 
     // Rewrite an [av_slide] link attribute by av_uid so the homepage poster always points to the latest report.
@@ -430,6 +444,74 @@ function eitaa_bridge_list_slides(WP_REST_Request $req) {
         }
     }
     return ['page_id' => $page_id, 'slides' => $out, 'count' => count($out)];
+}
+
+// news-section-source returns the shortcode bytes between the section heading and the next heading
+// so we can see how the homepage cards are actually authored before writing rotation logic against them.
+// Both sources of truth are returned: the canonical _aviaLayoutBuilderCleanData and the displayed post_content.
+function eitaa_bridge_news_section_source(WP_REST_Request $req) {
+    $page_id      = (int) $req->get_param('page_id');
+    $heading_text = trim((string) $req->get_param('heading_text'));
+    $page         = get_post($page_id);
+    if (!$page) {
+        return new WP_Error('eitaa_bridge_not_found',
+            sprintf('page %d not found', $page_id),
+            ['status' => 404]);
+    }
+    if ($heading_text === '') {
+        return new WP_Error('eitaa_bridge_bad_heading',
+            'heading_text is required and must not be empty',
+            ['status' => 400]);
+    }
+
+    $out = [
+        'page_id'      => $page_id,
+        'heading_text' => $heading_text,
+        'sources'      => [],
+    ];
+
+    foreach (['_aviaLayoutBuilderCleanData' => 'clean_data', 'post_content' => 'post_content'] as $field => $label) {
+        $haystack = $field === 'post_content'
+            ? (string) $page->post_content
+            : (string) get_post_meta($page_id, $field, true);
+        if ($haystack === '') {
+            $out['sources'][$label] = ['present' => false];
+            continue;
+        }
+        $out['sources'][$label] = eitaa_bridge_news_extract_section($haystack, $heading_text);
+        $out['sources'][$label]['present'] = true;
+    }
+    return $out;
+}
+
+// eitaa_bridge_news_extract_section finds the substring after the heading text marker
+// up to the next [av_heading] or [av_special_heading] shortcode (the next section).
+// It returns the heading offset, the section bytes, and the next-heading offset for inspection.
+function eitaa_bridge_news_extract_section(string $haystack, string $heading_text): array {
+    $heading_pos = mb_strpos($haystack, $heading_text);
+    if ($heading_pos === false) {
+        return [
+            'heading_found' => false,
+            'note'          => 'heading_text not found anywhere in this source',
+        ];
+    }
+    // Convert mb char offset back to byte offset for substr().
+    $byte_pos = strlen(mb_substr($haystack, 0, $heading_pos));
+
+    // Section ends at the next [av_heading or [av_special_heading shortcode opener.
+    $rest = substr($haystack, $byte_pos);
+    $end_offset = strlen($rest); // default: rest of document
+    if (preg_match('#\[av_(heading|special_heading)\b#u', $rest, $m, PREG_OFFSET_CAPTURE, mb_strlen($heading_text))) {
+        $end_offset = $m[0][1];
+    }
+    $section = substr($rest, 0, $end_offset);
+
+    return [
+        'heading_found'      => true,
+        'heading_byte_pos'   => $byte_pos,
+        'section_byte_len'   => strlen($section),
+        'section'            => $section,
+    ];
 }
 
 // Pulls a single='quoted' attribute value out of an Avia shortcode attribute string.
