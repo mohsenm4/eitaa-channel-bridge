@@ -296,11 +296,30 @@ func (r *runner) tick(ctx context.Context) {
 		r.log.Error("fetch failed", "err", err)
 		return
 	}
+	r.warnIfSilentFetch(msgs)
 	r.syncEditsAndDeletes(ctx, msgs)
 	// State is persisted per-message inside processOne; no end-of-tick save needed.
 	if n := r.processBatch(ctx, msgs); n == 0 {
 		r.log.Info("idle", "msg", "no new messages")
 	}
+}
+
+// warnIfSilentFetch surfaces a likely Eitaa markup change: a successful fetch
+// that parsed zero messages while the seen-set for this channel is non-empty.
+// Without this warning a parser break is invisible — healthcheck stays green
+// and the bot quietly stops publishing.
+func (r *runner) warnIfSilentFetch(msgs []eitaa.Message) {
+	if len(msgs) > 0 {
+		return
+	}
+	seen := r.store.Count(r.cfg.Source.Channel)
+	if seen == 0 {
+		// Legitimate empty state — first run on a fresh channel.
+		return
+	}
+	r.log.Warn("fetch returned zero messages while seen-set is non-empty — Eitaa markup may have changed",
+		"channel", r.cfg.Source.Channel,
+		"seen_count", seen)
 }
 
 // syncEditsAndDeletes mirrors author edits/deletes from the source channel to WP for tracked messages still on the fetched page.
