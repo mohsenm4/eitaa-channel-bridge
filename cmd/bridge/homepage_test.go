@@ -67,11 +67,11 @@ func itoa(n int) string {
 }
 
 type fakeHelperServerForNews struct {
-	srv        *httptest.Server
-	hits       atomic.Int32
-	gotPageID  int
-	gotPostID  int
-	statusCode int
+	srv             *httptest.Server
+	hits            atomic.Int32
+	gotPageID       int
+	gotCategorySlug string
+	statusCode      int
 }
 
 func newFakeHelperForNews(t *testing.T) *fakeHelperServerForNews {
@@ -79,18 +79,18 @@ func newFakeHelperForNews(t *testing.T) *fakeHelperServerForNews {
 	f := &fakeHelperServerForNews{statusCode: 200}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/rotate-news-section"):
+		case strings.HasSuffix(r.URL.Path, "/reconcile-news-section"):
 			body, _ := io.ReadAll(r.Body)
 			var payload struct {
-				PageID int `json:"page_id"`
-				PostID int `json:"post_id"`
+				PageID        int    `json:"page_id"`
+				CategorySlug  string `json:"category_slug"`
 			}
 			_ = json.Unmarshal(body, &payload)
 			f.gotPageID = payload.PageID
-			f.gotPostID = payload.PostID
+			f.gotCategorySlug = payload.CategorySlug
 			f.hits.Add(1)
 			w.WriteHeader(f.statusCode)
-			w.Write([]byte(`{"rotated":true,"touched":["_aviaLayoutBuilderCleanData","post_content"]}`))
+			w.Write([]byte(`{"reconciled":true,"card_count":3,"touched":["_aviaLayoutBuilderCleanData","post_content"]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -99,10 +99,11 @@ func newFakeHelperForNews(t *testing.T) *fakeHelperServerForNews {
 	return f
 }
 
-func TestProcessOne_RotatesNewsSection_OnAkhbarPublish(t *testing.T) {
+func TestProcessOne_ReconcilesNewsSection_OnAkhbarPublish(t *testing.T) {
 	fake := newFakeHelperForNews(t)
 	r, _ := newTestRunner(t, &mockPub{nextID: 1000})
 	r.cfg.Publishing.Categories[0].Slug = newsCategorySlug
+	r.cfg.Publishing.Categories[0].Label = "اخبار اطلاعیه"
 	r.rt = router.New("test", r.cfg.Publishing.Categories, nil)
 	r.cfg.WordPress.URL = fake.srv.URL
 	r.homePageID = 2
@@ -117,17 +118,17 @@ func TestProcessOne_RotatesNewsSection_OnAkhbarPublish(t *testing.T) {
 		t.Fatal("processOne returned false")
 	}
 	if got := fake.hits.Load(); got != 1 {
-		t.Fatalf("expected 1 rotate-news-section call, got %d", got)
+		t.Fatalf("expected 1 reconcile-news-section call, got %d", got)
 	}
 	if fake.gotPageID != 2 {
 		t.Errorf("page_id = %d, want 2", fake.gotPageID)
 	}
-	if fake.gotPostID != 1001 {
-		t.Errorf("post_id = %d, want 1001 (returned by mockPub)", fake.gotPostID)
+	if fake.gotCategorySlug != "اخبار اطلاعیه" {
+		t.Errorf("category_slug = %q, want %q", fake.gotCategorySlug, "اخبار اطلاعیه")
 	}
 }
 
-func TestProcessOne_SkipsNewsRotation_WhenCategoryDifferent(t *testing.T) {
+func TestProcessOne_SkipsNewsReconcile_WhenCategoryDifferent(t *testing.T) {
 	fake := newFakeHelperForNews(t)
 	r, _ := newTestRunner(t, &mockPub{nextID: 1000})
 	// Default test slug is "test", not the news slug.
@@ -144,15 +145,16 @@ func TestProcessOne_SkipsNewsRotation_WhenCategoryDifferent(t *testing.T) {
 		t.Fatal("processOne returned false")
 	}
 	if got := fake.hits.Load(); got != 0 {
-		t.Errorf("expected zero rotate-news-section calls, got %d", got)
+		t.Errorf("expected zero reconcile-news-section calls, got %d", got)
 	}
 }
 
-func TestProcessOne_NewsRotationFailure_DoesNotFailPublish(t *testing.T) {
+func TestProcessOne_NewsReconcileFailure_DoesNotFailPublish(t *testing.T) {
 	fake := newFakeHelperForNews(t)
 	fake.statusCode = 500
 	r, seenPath := newTestRunner(t, &mockPub{nextID: 1000})
 	r.cfg.Publishing.Categories[0].Slug = newsCategorySlug
+	r.cfg.Publishing.Categories[0].Label = "اخبار اطلاعیه"
 	r.rt = router.New("test", r.cfg.Publishing.Categories, nil)
 	r.cfg.WordPress.URL = fake.srv.URL
 	r.homePageID = 2
@@ -167,7 +169,7 @@ func TestProcessOne_NewsRotationFailure_DoesNotFailPublish(t *testing.T) {
 		t.Fatal("processOne returned false despite publish succeeding")
 	}
 	if !reloadSeen(t, seenPath).Seen("test", 52) {
-		t.Error("publish marked unseen due to homepage rotation failure — would cause duplicate next tick")
+		t.Error("publish marked unseen due to homepage reconcile failure — would cause duplicate next tick")
 	}
 }
 

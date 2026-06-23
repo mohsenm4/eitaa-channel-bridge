@@ -131,30 +131,13 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 		"category", routed.CategoryFa,
 		"title", utils.DisplayTitle(routed.Title, 50))
 	r.maybeUpdateHomepagePoster(ctx, routed, postID)
-	r.maybeRotateNewsSection(ctx, routed, postID)
+	if routed.Category == newsCategorySlug {
+		r.maybeReconcileNewsSection(ctx)
+	}
 	return true
 }
 
 const newsCategorySlug = "akhbar-etelaiyeh"
-
-// maybeRotateNewsSection cycles the homepage news cards; non-fatal on failure.
-func (r *runner) maybeRotateNewsSection(ctx context.Context, routed router.Routed, postID int) {
-	if routed.Category != newsCategorySlug {
-		return
-	}
-	if r.home == nil || r.homePageID <= 0 {
-		return
-	}
-	uctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if err := r.home.rotateNewsSection(uctx, r.homePageID, postID); err != nil {
-		r.log.Warn("news-section rotation failed — post is live, homepage cards unchanged",
-			"category", routed.Category, "wp_id", postID, "err", err)
-		return
-	}
-	r.log.Info("news-section rotated",
-		"category", routed.Category, "wp_id", postID, "page_id", r.homePageID)
-}
 
 const homepageDiscoveryTimeout = 30 * time.Second
 
@@ -410,6 +393,37 @@ func (r *runner) syncDeletion(ctx context.Context, id int, entry state.Entry) {
 		r.log.Warn("state save failed after deletion sync", "id", id, "err", err)
 	}
 	r.log.Info("deletion synced", "id", id, "wp_id", entry.PostID)
+	// Whatever was deleted, refresh the homepage news section: if it was a news post the freed
+	// slot is filled from the top-3 newest non-trashed posts; if it wasn't, the call is a no-op.
+	r.maybeReconcileNewsSection(ctx)
+}
+
+// maybeReconcileNewsSection rebuilds the news cards from the top-3 newest published news posts; non-fatal on failure.
+// Sends the WP category Label (Persian name) rather than newsCategorySlug because the WP category itself is keyed by its
+// Persian slug/name, while newsCategorySlug only describes the bridge's post-slug prefix.
+func (r *runner) maybeReconcileNewsSection(ctx context.Context) {
+	if r.home == nil || r.homePageID <= 0 {
+		return
+	}
+	label := ""
+	for _, c := range r.cfg.Publishing.Categories {
+		if c.Slug == newsCategorySlug {
+			label = c.Label
+			break
+		}
+	}
+	if label == "" {
+		// No WP category mapped for the news slug — nothing to reconcile against.
+		return
+	}
+	uctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := r.home.reconcileNewsSection(uctx, r.homePageID, label); err != nil {
+		r.log.Warn("news-section reconcile failed — homepage cards may show a deleted post",
+			"page_id", r.homePageID, "err", err)
+		return
+	}
+	r.log.Info("news-section reconciled", "page_id", r.homePageID, "category", label)
 }
 
 // backfill walks Eitaa's ?before= pagination backwards up to max older messages.
