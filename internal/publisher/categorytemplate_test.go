@@ -193,8 +193,15 @@ func TestAkhbarEttelaiyeh_RoutesToSimpleTemplateAndParser(t *testing.T) {
 	if !strings.Contains(out, `<h3 style="text-align: center;">کارگاه آموزشی تربیت مربی – آبان ۱۴۰۴</h3>`) {
 		t.Errorf("title heading missing:\n%s", out)
 	}
-	if strings.Contains(out, "vc_single_image") {
-		t.Errorf("vc_single_image should not appear in akhbar-etelaiyeh template:\n%s", out)
+	// Featured image is required at the top of the post so the news layout
+	// shows: image, then text, then gallery (slider) at the end.
+	if !strings.Contains(out, `[vc_single_image image="222" img_size="full" alignment="center"]`) {
+		t.Errorf("featured image shortcode missing at top of akhbar-etelaiyeh output:\n%s", out)
+	}
+	bodyIdx := strings.Index(out, "📅 تاریخ:")
+	imgIdx := strings.Index(out, "vc_single_image")
+	if imgIdx < 0 || imgIdx > bodyIdx {
+		t.Errorf("featured image must appear before the body text:\n%s", out)
 	}
 }
 
