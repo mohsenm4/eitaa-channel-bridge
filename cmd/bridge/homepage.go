@@ -150,10 +150,7 @@ func (h *homepageClient) updatePosterLink(ctx context.Context, pageID int, slide
 	return nil
 }
 
-// rotateNewsSection asks the helper plugin to rotate the three "اخبار و اطلاعیه ها" cards
-// on the homepage: a fresh card built from this post goes on top, the previous first/second
-// shift down, the previous third is dropped. The plugin reads the post's title / permalink /
-// featured-image directly from WP — we only forward the two IDs. Idempotent on the server side.
+// rotateNewsSection rotates the three news cards on the homepage; idempotent server-side.
 func (h *homepageClient) rotateNewsSection(ctx context.Context, pageID, postID int) error {
 	body, _ := json.Marshal(map[string]any{
 		"page_id": pageID,

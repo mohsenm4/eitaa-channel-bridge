@@ -90,8 +90,6 @@ add_action('rest_api_init', function () {
         'callback' => 'eitaa_bridge_site_settings',
     ]);
 
-    // Diagnostic: dump the raw shortcodes for the news-cards section bounded by a heading
-    // text marker, so we can see the real Avia/WPBakery source before writing rotation logic.
     register_rest_route('eitaa-bridge/v1', '/news-section-source', [
         'methods'             => 'GET',
         'permission_callback' => function () {
@@ -104,10 +102,6 @@ add_action('rest_api_init', function () {
         ],
     ]);
 
-    // Rotate the three news cards on the homepage: a fresh card (cloned from the current first card with
-    // its image / title / link replaced) goes on top, the previous first/second cards shift down, the
-    // previous third card is dropped. Idempotent: if the current first card already points at this
-    // post's permalink, nothing changes.
     register_rest_route('eitaa-bridge/v1', '/rotate-news-section', [
         'methods'             => 'POST',
         'permission_callback' => function () {
@@ -463,17 +457,6 @@ function eitaa_bridge_list_slides(WP_REST_Request $req) {
     return ['page_id' => $page_id, 'slides' => $out, 'count' => count($out)];
 }
 
-// rotate-news-section is the main news-cards rotator. Algorithm:
-//   1. Locate the heading by exact text match.
-//   2. Capture the next three [av_one_third] ... [/av_one_third] blocks.
-//   3. Build a NEW card by cloning cards[0] (the current first card) and substituting
-//      its image src / attachment id / link / <h4> title with the new post's values.
-//   4. Demote the old cards[0] by removing its `first` attribute.
-//   5. Reassemble: new_card + sep + old_first_demoted + sep + cards[1].
-//      cards[2] (oldest) and its preceding separator are dropped.
-//   6. Apply to both _aviaLayoutBuilderCleanData and post_content, bust caches.
-//
-// Idempotent: if cards[0]'s link already equals the new post's permalink, the section is left untouched.
 function eitaa_bridge_rotate_news_section(WP_REST_Request $req) {
     $page_id      = (int) $req->get_param('page_id');
     $post_id      = (int) $req->get_param('post_id');
@@ -497,7 +480,6 @@ function eitaa_bridge_rotate_news_section(WP_REST_Request $req) {
             ['status' => 400]);
     }
 
-    // Resolve the new card's content from the post.
     $post_title    = get_the_title($post_id);
     $post_link     = get_permalink($post_id);
     $thumb_id      = (int) get_post_thumbnail_id($post_id);
@@ -553,7 +535,6 @@ function eitaa_bridge_rotate_news_section(WP_REST_Request $req) {
             ['status' => 404]);
     }
 
-    // Bust caches identical to the other Avia-editing endpoints.
     $cleared = [];
     foreach (['_avia_builder_shortcode_tree', '_avia_sc_parser_state'] as $k) {
         if (metadata_exists('post', $page_id, $k)) {
@@ -580,16 +561,10 @@ function eitaa_bridge_rotate_news_section(WP_REST_Request $req) {
     ];
 }
 
-// eitaa_bridge_rotate_news_in_text is the pure-string rotation logic, isolated so the same code
-// runs against both CleanData and post_content without touching WP globals. It returns:
-//   - text:         the rewritten haystack (only meaningful when rewrote=true)
-//   - rewrote:      true when the haystack changed
-//   - already_top:  true when the first card already points at $new_link (no change needed)
-//   - or a WP_Error if the section / cards couldn't be located.
+// Pure-string rotation, runs against CleanData and post_content alike.
 function eitaa_bridge_rotate_news_in_text(string $haystack, string $heading_text,
                                           string $new_link, string $new_image_url, int $new_image_id,
                                           string $new_title) {
-    // Anchor: the heading shortcode that opens the news section.
     $needle = "heading='" . $heading_text . "'";
     $h_pos  = strpos($haystack, $needle);
     if ($h_pos === false) {
@@ -600,7 +575,6 @@ function eitaa_bridge_rotate_news_in_text(string $haystack, string $heading_text
         ];
     }
 
-    // Capture the next three [av_one_third]...[/av_one_third] blocks after the heading.
     $cards = [];
     $cursor = $h_pos;
     for ($i = 0; $i < 3; $i++) {
@@ -624,7 +598,7 @@ function eitaa_bridge_rotate_news_in_text(string $haystack, string $heading_text
         ];
     }
 
-    // Idempotency check: the first card already links to this post → no rotation needed.
+    // Idempotent: skip if the first card already links to this post.
     if (strpos($cards[0]['text'], "link='manually," . $new_link . "'") !== false) {
         return [
             'text'         => $haystack,
@@ -633,10 +607,7 @@ function eitaa_bridge_rotate_news_in_text(string $haystack, string $heading_text
         ];
     }
 
-    // Build the new top card by cloning cards[0] and substituting image / link / title.
-    // The src= and attachment= attributes also appear (empty) on the outer [av_one_third]
-    // column shortcode, so we must scope the image edits to the [av_image ...] opening tag
-    // only — otherwise we'd overwrite the column background instead of the image.
+    // Substitutions are scoped to [av_image ...] because [av_one_third] also has empty src=/attachment= attrs.
     $new_card = $cards[0]['text'];
     if (preg_match('#\[av_image\b[^\]]*\]#u', $new_card, $img_m, PREG_OFFSET_CAPTURE)) {
         $img_open = $img_m[0][0];
@@ -658,13 +629,9 @@ function eitaa_bridge_rotate_news_in_text(string $haystack, string $heading_text
     $new_card = preg_replace('#<h4 style="text-align: center;">[\s\S]*?</h4>#u',
         '<h4 style="text-align: center;">' . $new_title . '</h4>', $new_card, 1);
 
-    // Demote the old first card by stripping the `first` flag.
     $demoted_first = preg_replace('#\[av_one_third first\b#u', '[av_one_third', $cards[0]['text'], 1);
-
-    // Capture the separator between original cards[0] and cards[1] (newlines/whitespace).
     $sep01 = substr($haystack, $cards[0]['end'], $cards[1]['start'] - $cards[0]['end']);
 
-    // Reassemble: prefix + new_card + sep + demoted_first + sep + cards[1] + suffix (after cards[2]).
     $prefix       = substr($haystack, 0, $cards[0]['start']);
     $suffix       = substr($haystack, $cards[2]['end']);
     $new_section  = $new_card . $sep01 . $demoted_first . $sep01 . $cards[1]['text'];
@@ -677,9 +644,6 @@ function eitaa_bridge_rotate_news_in_text(string $haystack, string $heading_text
     ];
 }
 
-// news-section-source returns the shortcode bytes between the section heading and the next heading
-// so we can see how the homepage cards are actually authored before writing rotation logic against them.
-// Both sources of truth are returned: the canonical _aviaLayoutBuilderCleanData and the displayed post_content.
 function eitaa_bridge_news_section_source(WP_REST_Request $req) {
     $page_id      = (int) $req->get_param('page_id');
     $heading_text = trim((string) $req->get_param('heading_text'));
@@ -715,9 +679,6 @@ function eitaa_bridge_news_section_source(WP_REST_Request $req) {
     return $out;
 }
 
-// eitaa_bridge_news_extract_section finds the substring after the heading text marker
-// up to the next [av_heading] or [av_special_heading] shortcode (the next section).
-// It returns the heading offset, the section bytes, and the next-heading offset for inspection.
 function eitaa_bridge_news_extract_section(string $haystack, string $heading_text): array {
     $heading_pos = mb_strpos($haystack, $heading_text);
     if ($heading_pos === false) {
@@ -726,12 +687,10 @@ function eitaa_bridge_news_extract_section(string $haystack, string $heading_tex
             'note'          => 'heading_text not found anywhere in this source',
         ];
     }
-    // Convert mb char offset back to byte offset for substr().
     $byte_pos = strlen(mb_substr($haystack, 0, $heading_pos));
 
-    // Section ends at the next [av_heading or [av_special_heading shortcode opener.
     $rest = substr($haystack, $byte_pos);
-    $end_offset = strlen($rest); // default: rest of document
+    $end_offset = strlen($rest);
     if (preg_match('#\[av_(heading|special_heading)\b#u', $rest, $m, PREG_OFFSET_CAPTURE, mb_strlen($heading_text))) {
         $end_offset = $m[0][1];
     }

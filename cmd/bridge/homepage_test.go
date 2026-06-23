@@ -66,7 +66,6 @@ func itoa(n int) string {
 	return string(b[i:])
 }
 
-// fakeHelperServerForNews captures one /rotate-news-section call.
 type fakeHelperServerForNews struct {
 	srv        *httptest.Server
 	hits       atomic.Int32
@@ -79,7 +78,6 @@ func newFakeHelperForNews(t *testing.T) *fakeHelperServerForNews {
 	t.Helper()
 	f := &fakeHelperServerForNews{statusCode: 200}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Accept both endpoints so the same fake works for tests that touch poster + news in one run.
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/rotate-news-section"):
 			body, _ := io.ReadAll(r.Body)
@@ -101,13 +99,9 @@ func newFakeHelperForNews(t *testing.T) *fakeHelperServerForNews {
 	return f
 }
 
-// TestProcessOne_RotatesNewsSection_OnAkhbarPublish: after a successful publish of an
-// akhbar-ettelaiyeh post, the bridge must POST a rotate-news-section call with the WP
-// page id and the new post's id. Non-news categories must not trigger this call.
 func TestProcessOne_RotatesNewsSection_OnAkhbarPublish(t *testing.T) {
 	fake := newFakeHelperForNews(t)
 	r, _ := newTestRunner(t, &mockPub{nextID: 1000})
-	// Re-route hashtag "test" to the akhbar-ettelaiyeh slug so processOne classifies the message as news.
 	r.cfg.Publishing.Categories[0].Slug = newsCategorySlug
 	r.rt = router.New("test", r.cfg.Publishing.Categories, nil)
 	r.cfg.WordPress.URL = fake.srv.URL
@@ -133,12 +127,10 @@ func TestProcessOne_RotatesNewsSection_OnAkhbarPublish(t *testing.T) {
 	}
 }
 
-// TestProcessOne_SkipsNewsRotation_WhenCategoryDifferent: any non-news category must not
-// trigger /rotate-news-section even though the homepage client is available.
 func TestProcessOne_SkipsNewsRotation_WhenCategoryDifferent(t *testing.T) {
 	fake := newFakeHelperForNews(t)
 	r, _ := newTestRunner(t, &mockPub{nextID: 1000})
-	// Default test category slug is "test", not the news slug — rotation should NOT fire.
+	// Default test slug is "test", not the news slug.
 	r.cfg.WordPress.URL = fake.srv.URL
 	r.homePageID = 2
 	r.home = newHomepageClient(fake.srv.URL, "u", "p")
@@ -156,9 +148,6 @@ func TestProcessOne_SkipsNewsRotation_WhenCategoryDifferent(t *testing.T) {
 	}
 }
 
-// TestProcessOne_NewsRotationFailure_DoesNotFailPublish: a 500 from the helper plugin must
-// be logged but must NOT cause processOne to return false (otherwise the post would be
-// re-processed next tick and re-published, creating a duplicate).
 func TestProcessOne_NewsRotationFailure_DoesNotFailPublish(t *testing.T) {
 	fake := newFakeHelperForNews(t)
 	fake.statusCode = 500

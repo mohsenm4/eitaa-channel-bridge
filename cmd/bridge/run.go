@@ -31,17 +31,13 @@ type runner struct {
 	client *eitaa.Client
 	rt     *router.Router
 
-	// Homepage state — discovered at runtime; no env-var equivalents.
-	// home is the helper-plugin client; nil disables every homepage feature this run.
-	home *homepageClient
-	// homePageID is the WP id of the static front page, learned from /site-settings.
-	homePageID int
-	// posterLinks maps a routing hashtag (or category slug) to the av_uid of the slide whose link gets rewritten on publish.
+	// Homepage state, discovered at runtime; nil home disables homepage features this run.
+	home        *homepageClient
+	homePageID  int
 	posterLinks map[string]string
 
-	// publishFailStreak counts consecutive Publish failures; flips healthcheck to DOWN when it crosses the threshold.
-	publishFailStreak int
-	// publishFailAlerted is true after we've sent the /fail ping for the current streak — avoids spamming the ping.
+	// publishFailStreak crosses HealthcheckFailureThreshold → ping /fail. Alerted suppresses duplicate pings.
+	publishFailStreak  int
 	publishFailAlerted bool
 }
 
@@ -139,11 +135,9 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 	return true
 }
 
-// newsCategorySlug identifies the WP slug whose posts trigger homepage news-card rotation.
 const newsCategorySlug = "akhbar-ettelaiyeh"
 
-// maybeRotateNewsSection cycles the three news cards on the homepage when this publish belongs
-// to the news category. Non-fatal: any failure is logged but the publish stays committed.
+// maybeRotateNewsSection cycles the homepage news cards; non-fatal on failure.
 func (r *runner) maybeRotateNewsSection(ctx context.Context, routed router.Routed, postID int) {
 	if routed.Category != newsCategorySlug {
 		return
@@ -324,17 +318,13 @@ func (r *runner) tick(ctx context.Context) {
 	}
 }
 
-// warnIfSilentFetch surfaces a likely Eitaa markup change: a successful fetch
-// that parsed zero messages while the seen-set for this channel is non-empty.
-// Without this warning a parser break is invisible — healthcheck stays green
-// and the bot quietly stops publishing.
+// warnIfSilentFetch flags a likely Eitaa markup change: empty fetch with non-empty seen-set.
 func (r *runner) warnIfSilentFetch(msgs []eitaa.Message) {
 	if len(msgs) > 0 {
 		return
 	}
 	seen := r.store.Count(r.cfg.Source.Channel)
 	if seen == 0 {
-		// Legitimate empty state — first run on a fresh channel.
 		return
 	}
 	r.log.Warn("fetch returned zero messages while seen-set is non-empty — Eitaa markup may have changed",
