@@ -168,33 +168,33 @@ func TestAkhbarEttelaiyeh_RoutesToSimpleTemplateAndParser(t *testing.T) {
 	// News & announcements posts use the same narrative parser as the four
 	// existing report categories — title + date + body, no special handling.
 	msg := tavanmandRouted()
-	msg.Category = "akhbar-ettelaiyeh"
+	msg.Category = "akhbar-etelaiyeh"
 	msg.CategoryFa = "اخبار و اطلاعیه‌ها"
 
-	if _, ok := loadCategoryTemplate("akhbar-ettelaiyeh"); !ok {
-		t.Fatal("akhbar-ettelaiyeh.tmpl not embedded")
+	if _, ok := loadCategoryTemplate("akhbar-etelaiyeh"); !ok {
+		t.Fatal("akhbar-etelaiyeh.tmpl not embedded")
 	}
 	vars := extractCategoryVars(msg, 222)
 	if vars == nil {
-		t.Fatal("expected non-nil vars for akhbar-ettelaiyeh")
+		t.Fatal("expected non-nil vars for akhbar-etelaiyeh")
 	}
 	if vars["TITLE"] == "" || vars["BODY"] == "" || vars["EVENT_DATE"] == "" {
 		t.Errorf("simple parser fields missing: %#v", vars)
 	}
 
-	tmpl, _ := loadCategoryTemplate("akhbar-ettelaiyeh")
+	tmpl, _ := loadCategoryTemplate("akhbar-etelaiyeh")
 	out := renderCategoryTemplate(tmpl, vars)
 	if strings.Contains(out, "{{") {
 		t.Errorf("unfilled placeholder remains:\n%s", out)
 	}
 	if !strings.Contains(out, "📅 تاریخ: 1404/08/15") {
-		t.Errorf("date line missing in akhbar-ettelaiyeh output:\n%s", out)
+		t.Errorf("date line missing in akhbar-etelaiyeh output:\n%s", out)
 	}
 	if !strings.Contains(out, `<h3 style="text-align: center;">کارگاه آموزشی تربیت مربی – آبان ۱۴۰۴</h3>`) {
 		t.Errorf("title heading missing:\n%s", out)
 	}
 	if strings.Contains(out, "vc_single_image") {
-		t.Errorf("vc_single_image should not appear in akhbar-ettelaiyeh template:\n%s", out)
+		t.Errorf("vc_single_image should not appear in akhbar-etelaiyeh template:\n%s", out)
 	}
 }
 

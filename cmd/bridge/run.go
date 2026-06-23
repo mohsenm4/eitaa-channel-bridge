@@ -135,7 +135,7 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 	return true
 }
 
-const newsCategorySlug = "akhbar-ettelaiyeh"
+const newsCategorySlug = "akhbar-etelaiyeh"
 
 // maybeRotateNewsSection cycles the homepage news cards; non-fatal on failure.
 func (r *runner) maybeRotateNewsSection(ctx context.Context, routed router.Routed, postID int) {
