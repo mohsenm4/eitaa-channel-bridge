@@ -72,8 +72,8 @@ func TestProcessOne_UpdatesHomepagePoster_WhenCategoryMapped(t *testing.T) {
 	fake := newFakeHelper(t)
 	r, _ := newTestRunner(t, &mockPub{nextID: 1000})
 	r.cfg.WordPress.URL = fake.srv.URL
-	r.cfg.Homepage.PageID = 2
-	r.cfg.Homepage.PosterLinks = map[string]string{"test": "av-aaaa"}
+	r.homePageID = 2
+	r.posterLinks = map[string]string{"test": "av-aaaa"}
 	r.home = newHomepageClient(fake.srv.URL, "u", "p")
 
 	msg := eitaa.Message{
@@ -105,8 +105,8 @@ func TestProcessOne_SkipsHomepageUpdate_WhenCategoryNotMapped(t *testing.T) {
 	fake := newFakeHelper(t)
 	r, _ := newTestRunner(t, &mockPub{nextID: 1000})
 	r.cfg.WordPress.URL = fake.srv.URL
-	r.cfg.Homepage.PageID = 2
-	r.cfg.Homepage.PosterLinks = map[string]string{"OTHER_TAG": "av-aaaa"} // doesn't include "test"
+	r.homePageID = 2
+	r.posterLinks = map[string]string{"OTHER_TAG": "av-aaaa"} // doesn't include "test"
 	r.home = newHomepageClient(fake.srv.URL, "u", "p")
 
 	msg := eitaa.Message{
@@ -131,8 +131,8 @@ func TestProcessOne_HomepageFailure_DoesNotFailPublish(t *testing.T) {
 	fake.statusCode = 500
 	r, seenPath := newTestRunner(t, &mockPub{nextID: 1000})
 	r.cfg.WordPress.URL = fake.srv.URL
-	r.cfg.Homepage.PageID = 2
-	r.cfg.Homepage.PosterLinks = map[string]string{"test": "av-aaaa"}
+	r.homePageID = 2
+	r.posterLinks = map[string]string{"test": "av-aaaa"}
 	r.home = newHomepageClient(fake.srv.URL, "u", "p")
 
 	msg := eitaa.Message{
@@ -154,9 +154,9 @@ func TestProcessOne_HomepageFailure_DoesNotFailPublish(t *testing.T) {
 func TestProcessOne_NoHomepageClient_NoCalls(t *testing.T) {
 	fake := newFakeHelper(t)
 	r, _ := newTestRunner(t, &mockPub{nextID: 1000})
-	r.cfg.Homepage.PageID = 0
-	r.cfg.Homepage.PosterLinks = map[string]string{"test": "av-aaaa"}
-	// r.home stays nil (matches newRunner behaviour when PageID == 0)
+	r.homePageID = 0
+	r.posterLinks = map[string]string{"test": "av-aaaa"}
+	// r.home stays nil (matches newRunner behaviour before discovery)
 
 	msg := eitaa.Message{
 		ID: 45, Channel: "test",

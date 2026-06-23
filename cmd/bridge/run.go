@@ -30,7 +30,14 @@ type runner struct {
 	pub    publisher.Publisher
 	client *eitaa.Client
 	rt     *router.Router
-	home   *homepageClient
+
+	// Homepage state — discovered at runtime; no env-var equivalents.
+	// home is the helper-plugin client; nil disables every homepage feature this run.
+	home *homepageClient
+	// homePageID is the WP id of the static front page, learned from /site-settings.
+	homePageID int
+	// posterLinks maps a routing hashtag (or category slug) to the av_uid of the slide whose link gets rewritten on publish.
+	posterLinks map[string]string
 
 	// publishFailStreak counts consecutive Publish failures; flips healthcheck to DOWN when it crosses the threshold.
 	publishFailStreak int
@@ -44,10 +51,6 @@ func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
 		return nil, err
 	}
 	pub := publisher.NewWordPress(cfg.WordPress, log)
-	var home *homepageClient
-	if cfg.Homepage.PageID > 0 {
-		home = newHomepageClient(cfg.WordPress.URL, cfg.WordPress.Username, cfg.WordPress.AppPassword)
-	}
 	return &runner{
 		cfg:    cfg,
 		log:    log,
@@ -55,7 +58,6 @@ func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
 		pub:    pub,
 		client: eitaa.New(),
 		rt:     router.New(cfg.Source.Channel, cfg.Publishing.Categories, cfg.Publishing.Default),
-		home:   home,
 	}, nil
 }
 
@@ -138,7 +140,7 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 
 const homepageDiscoveryTimeout = 30 * time.Second
 
-// discoverHomepage auto-fills cfg.Homepage.{PageID,PosterLinks} from WP; manual .env entries win and failures are non-fatal.
+// discoverHomepage fills r.homePageID and r.posterLinks from WP; failures are non-fatal and just disable the homepage features for this run.
 func (r *runner) discoverHomepage(ctx context.Context) {
 	if !r.ensureHomepageClient() {
 		return
@@ -166,12 +168,9 @@ func (r *runner) ensureHomepageClient() bool {
 
 // discoverFrontPageID asks WP for the static front-page id; returns false to disable homepage features this run.
 func (r *runner) discoverFrontPageID(ctx context.Context) bool {
-	if r.cfg.Homepage.PageID != 0 {
-		return true
-	}
 	pageID, err := r.home.detectFrontPageID(ctx)
 	if err != nil {
-		r.log.Warn("homepage discovery: front-page id lookup failed — set HOMEPAGE_PAGE_ID manually to enable poster updates", "err", err)
+		r.log.Warn("homepage discovery: front-page id lookup failed — homepage features disabled this run", "err", err)
 		r.home = nil
 		return false
 	}
@@ -180,17 +179,14 @@ func (r *runner) discoverFrontPageID(ctx context.Context) bool {
 		r.home = nil
 		return false
 	}
-	r.cfg.Homepage.PageID = pageID
+	r.homePageID = pageID
 	r.log.Info("homepage page id discovered", "page_id", pageID)
 	return true
 }
 
 // autoMapPostersToCategories pairs each av_slide poster with a category whose WP slug appears inside the image slug.
 func (r *runner) autoMapPostersToCategories(ctx context.Context) {
-	if len(r.cfg.Homepage.PosterLinks) > 0 {
-		return
-	}
-	slides, err := r.home.listSlides(ctx, r.cfg.Homepage.PageID)
+	slides, err := r.home.listSlides(ctx, r.homePageID)
 	if err != nil {
 		r.log.Warn("homepage discovery: list-slides failed — poster updates disabled this run", "err", err)
 		return
@@ -199,7 +195,7 @@ func (r *runner) autoMapPostersToCategories(ctx context.Context) {
 	for _, slide := range slides {
 		r.mapSlideToCategory(ctx, slide, mapping)
 	}
-	r.cfg.Homepage.PosterLinks = mapping
+	r.posterLinks = mapping
 	if len(mapping) == 0 {
 		r.log.Info("homepage discovery: no poster image slug matched any category — name posters like \"<category-slug>-something.jpg\" to enable")
 	}
@@ -235,14 +231,14 @@ func (r *runner) mapSlideToCategory(ctx context.Context, slide Slide, mapping ma
 
 // maybeUpdateHomepagePoster repoints the matching homepage poster's link at the freshly-published post; non-fatal on failure.
 func (r *runner) maybeUpdateHomepagePoster(ctx context.Context, routed router.Routed, postID int) {
-	if r.home == nil || len(r.cfg.Homepage.PosterLinks) == 0 || r.cfg.Homepage.PageID <= 0 {
+	if r.home == nil || len(r.posterLinks) == 0 || r.homePageID <= 0 {
 		return
 	}
-	uid, ok := r.cfg.Homepage.PosterLinks[routed.Category]
+	uid, ok := r.posterLinks[routed.Category]
 	if !ok {
-		// Fall back to matching by hashtag in case POSTER_LINKS was keyed off the hashtag, not the slug.
+		// Fall back to matching by hashtag in case the auto-mapping keyed off the hashtag, not the slug.
 		for _, tag := range routed.Hashtags {
-			if u, found := r.cfg.Homepage.PosterLinks[tag]; found {
+			if u, found := r.posterLinks[tag]; found {
 				uid = u
 				ok = true
 				break
@@ -255,7 +251,7 @@ func (r *runner) maybeUpdateHomepagePoster(ctx context.Context, routed router.Ro
 	link := fmt.Sprintf("%s/?p=%d", strings.TrimRight(r.cfg.WordPress.URL, "/"), postID)
 	uctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if err := r.home.updatePosterLink(uctx, r.cfg.Homepage.PageID, uid, link); err != nil {
+	if err := r.home.updatePosterLink(uctx, r.homePageID, uid, link); err != nil {
 		r.log.Warn("homepage poster update failed — post is live, poster keeps prior link",
 			"category", routed.Category, "slide_uid", uid, "wp_id", postID, "err", err)
 		return
@@ -497,9 +493,8 @@ func runRun(log *slog.Logger, args []string) {
 		"categories", strings.Join(categoryTags(cfg.Publishing.Categories), ","),
 		"inbox", strings.Join(cfg.Publishing.InboxHashtags, ","),
 		"skip", strings.Join(cfg.Publishing.SkipHashtags, ","),
-		"homepage_page", cfg.Homepage.PageID,
-		"posters", len(cfg.Homepage.PosterLinks),
 	)
+	// Homepage state is logged after discoverHomepage runs (see Run).
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
