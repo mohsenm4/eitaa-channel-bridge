@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Eitaa Bridge Helper
  * Description: REST endpoints that clone posts (preserving meta) and edit Avia layout for the eitaa-channel-bridge bot.
- * Version:     1.6.0
+ * Version:     1.7.0
  * Author:      Mohsen
  */
 
@@ -101,6 +101,23 @@ add_action('rest_api_init', function () {
         'args'     => [
             'page_id'       => ['required' => true, 'type' => 'integer'],
             'heading_text'  => ['type' => 'string', 'default' => 'اخبار و اطلاعیه ها'],
+        ],
+    ]);
+
+    // Rotate the three news cards on the homepage: a fresh card (cloned from the current first card with
+    // its image / title / link replaced) goes on top, the previous first/second cards shift down, the
+    // previous third card is dropped. Idempotent: if the current first card already points at this
+    // post's permalink, nothing changes.
+    register_rest_route('eitaa-bridge/v1', '/rotate-news-section', [
+        'methods'             => 'POST',
+        'permission_callback' => function () {
+            return current_user_can('edit_pages');
+        },
+        'callback' => 'eitaa_bridge_rotate_news_section',
+        'args'     => [
+            'page_id'      => ['required' => true, 'type' => 'integer'],
+            'post_id'      => ['required' => true, 'type' => 'integer'],
+            'heading_text' => ['type' => 'string', 'default' => 'اخبار و اطلاعیه ها'],
         ],
     ]);
 
@@ -444,6 +461,220 @@ function eitaa_bridge_list_slides(WP_REST_Request $req) {
         }
     }
     return ['page_id' => $page_id, 'slides' => $out, 'count' => count($out)];
+}
+
+// rotate-news-section is the main news-cards rotator. Algorithm:
+//   1. Locate the heading by exact text match.
+//   2. Capture the next three [av_one_third] ... [/av_one_third] blocks.
+//   3. Build a NEW card by cloning cards[0] (the current first card) and substituting
+//      its image src / attachment id / link / <h4> title with the new post's values.
+//   4. Demote the old cards[0] by removing its `first` attribute.
+//   5. Reassemble: new_card + sep + old_first_demoted + sep + cards[1].
+//      cards[2] (oldest) and its preceding separator are dropped.
+//   6. Apply to both _aviaLayoutBuilderCleanData and post_content, bust caches.
+//
+// Idempotent: if cards[0]'s link already equals the new post's permalink, the section is left untouched.
+function eitaa_bridge_rotate_news_section(WP_REST_Request $req) {
+    $page_id      = (int) $req->get_param('page_id');
+    $post_id      = (int) $req->get_param('post_id');
+    $heading_text = trim((string) $req->get_param('heading_text'));
+
+    $page = get_post($page_id);
+    if (!$page) {
+        return new WP_Error('eitaa_bridge_not_found',
+            sprintf('page %d not found', $page_id),
+            ['status' => 404]);
+    }
+    $post = get_post($post_id);
+    if (!$post) {
+        return new WP_Error('eitaa_bridge_not_found',
+            sprintf('post %d not found', $post_id),
+            ['status' => 404]);
+    }
+    if ($heading_text === '') {
+        return new WP_Error('eitaa_bridge_bad_heading',
+            'heading_text must be non-empty',
+            ['status' => 400]);
+    }
+
+    // Resolve the new card's content from the post.
+    $post_title    = get_the_title($post_id);
+    $post_link     = get_permalink($post_id);
+    $thumb_id      = (int) get_post_thumbnail_id($post_id);
+    $thumb_url     = $thumb_id > 0 ? (string) wp_get_attachment_url($thumb_id) : '';
+    if ($post_title === '' || $post_link === '' || $thumb_id <= 0 || $thumb_url === '') {
+        return new WP_Error('eitaa_bridge_post_incomplete',
+            sprintf('post %d is missing title, permalink, or featured image — cannot build news card', $post_id),
+            ['status' => 400]);
+    }
+
+    $touched         = [];
+    $skipped_already = false;
+
+    foreach (['_aviaLayoutBuilderCleanData', 'post_content'] as $field) {
+        $haystack = $field === 'post_content'
+            ? (string) $page->post_content
+            : (string) get_post_meta($page_id, $field, true);
+        if ($haystack === '') {
+            continue;
+        }
+        $result = eitaa_bridge_rotate_news_in_text($haystack, $heading_text,
+            $post_link, $thumb_url, $thumb_id, $post_title);
+        if (is_wp_error($result)) {
+            return $result;
+        }
+        if ($result['already_top']) {
+            $skipped_already = true;
+            continue;
+        }
+        if ($result['rewrote']) {
+            if ($field === 'post_content') {
+                wp_update_post(['ID' => $page_id, 'post_content' => $result['text']], true);
+            } else {
+                update_post_meta($page_id, $field, $result['text']);
+            }
+            $touched[] = $field;
+        }
+    }
+
+    if ($skipped_already && count($touched) === 0) {
+        return [
+            'page_id'  => $page_id,
+            'post_id'  => $post_id,
+            'rotated'  => false,
+            'reason'   => 'first card already points at this post — nothing to do',
+            'touched'  => [],
+        ];
+    }
+
+    if (count($touched) === 0) {
+        return new WP_Error('eitaa_bridge_section_not_found',
+            sprintf('no news section with heading %q and three cards found on page %d', $heading_text, $page_id),
+            ['status' => 404]);
+    }
+
+    // Bust caches identical to the other Avia-editing endpoints.
+    $cleared = [];
+    foreach (['_avia_builder_shortcode_tree', '_avia_sc_parser_state'] as $k) {
+        if (metadata_exists('post', $page_id, $k)) {
+            delete_post_meta($page_id, $k);
+            $cleared[] = $k;
+        }
+    }
+    $cache_actions = [];
+    if (function_exists('rocket_clean_post')) { rocket_clean_post($page_id); $cache_actions[] = 'rocket_clean_post'; }
+    if (function_exists('rocket_clean_home')) { rocket_clean_home();         $cache_actions[] = 'rocket_clean_home'; }
+    clean_post_cache($page_id);
+    $cache_actions[] = 'clean_post_cache';
+
+    return [
+        'page_id'        => $page_id,
+        'post_id'        => $post_id,
+        'rotated'        => true,
+        'touched'        => $touched,
+        'cleared_caches' => $cleared,
+        'cache_actions'  => $cache_actions,
+        'new_title'      => $post_title,
+        'new_link'       => $post_link,
+        'new_image_id'   => $thumb_id,
+    ];
+}
+
+// eitaa_bridge_rotate_news_in_text is the pure-string rotation logic, isolated so the same code
+// runs against both CleanData and post_content without touching WP globals. It returns:
+//   - text:         the rewritten haystack (only meaningful when rewrote=true)
+//   - rewrote:      true when the haystack changed
+//   - already_top:  true when the first card already points at $new_link (no change needed)
+//   - or a WP_Error if the section / cards couldn't be located.
+function eitaa_bridge_rotate_news_in_text(string $haystack, string $heading_text,
+                                          string $new_link, string $new_image_url, int $new_image_id,
+                                          string $new_title) {
+    // Anchor: the heading shortcode that opens the news section.
+    $needle = "heading='" . $heading_text . "'";
+    $h_pos  = strpos($haystack, $needle);
+    if ($h_pos === false) {
+        return [
+            'text'         => $haystack,
+            'rewrote'      => false,
+            'already_top'  => false,
+        ];
+    }
+
+    // Capture the next three [av_one_third]...[/av_one_third] blocks after the heading.
+    $cards = [];
+    $cursor = $h_pos;
+    for ($i = 0; $i < 3; $i++) {
+        $start = strpos($haystack, '[av_one_third', $cursor);
+        if ($start === false) { break; }
+        $close = strpos($haystack, '[/av_one_third]', $start);
+        if ($close === false) { break; }
+        $end = $close + strlen('[/av_one_third]');
+        $cards[] = [
+            'start' => $start,
+            'end'   => $end,
+            'text'  => substr($haystack, $start, $end - $start),
+        ];
+        $cursor = $end;
+    }
+    if (count($cards) < 3) {
+        return [
+            'text'         => $haystack,
+            'rewrote'      => false,
+            'already_top'  => false,
+        ];
+    }
+
+    // Idempotency check: the first card already links to this post → no rotation needed.
+    if (strpos($cards[0]['text'], "link='manually," . $new_link . "'") !== false) {
+        return [
+            'text'         => $haystack,
+            'rewrote'      => false,
+            'already_top'  => true,
+        ];
+    }
+
+    // Build the new top card by cloning cards[0] and substituting image / link / title.
+    // The src= and attachment= attributes also appear (empty) on the outer [av_one_third]
+    // column shortcode, so we must scope the image edits to the [av_image ...] opening tag
+    // only — otherwise we'd overwrite the column background instead of the image.
+    $new_card = $cards[0]['text'];
+    if (preg_match('#\[av_image\b[^\]]*\]#u', $new_card, $img_m, PREG_OFFSET_CAPTURE)) {
+        $img_open = $img_m[0][0];
+        $img_pos  = $img_m[0][1];
+
+        $new_img_open = $img_open;
+        $new_img_open = preg_replace("#\\bsrc='[^']*'#u",
+            "src='" . $new_image_url . "'", $new_img_open, 1);
+        $new_img_open = preg_replace("#\\battachment='[^']*'#u",
+            "attachment='" . $new_image_id . "'", $new_img_open, 1);
+        $new_img_open = preg_replace("#\\blink='manually,[^']*'#u",
+            "link='manually," . $new_link . "'", $new_img_open, 1);
+
+        $new_card = substr($new_card, 0, $img_pos)
+                  . $new_img_open
+                  . substr($new_card, $img_pos + strlen($img_open));
+    }
+    // <h4> appears once per card (inside the [av_textblock]); safe to do unscoped.
+    $new_card = preg_replace('#<h4 style="text-align: center;">[\s\S]*?</h4>#u',
+        '<h4 style="text-align: center;">' . $new_title . '</h4>', $new_card, 1);
+
+    // Demote the old first card by stripping the `first` flag.
+    $demoted_first = preg_replace('#\[av_one_third first\b#u', '[av_one_third', $cards[0]['text'], 1);
+
+    // Capture the separator between original cards[0] and cards[1] (newlines/whitespace).
+    $sep01 = substr($haystack, $cards[0]['end'], $cards[1]['start'] - $cards[0]['end']);
+
+    // Reassemble: prefix + new_card + sep + demoted_first + sep + cards[1] + suffix (after cards[2]).
+    $prefix       = substr($haystack, 0, $cards[0]['start']);
+    $suffix       = substr($haystack, $cards[2]['end']);
+    $new_section  = $new_card . $sep01 . $demoted_first . $sep01 . $cards[1]['text'];
+    $new_haystack = $prefix . $new_section . $suffix;
+
+    return [
+        'text'         => $new_haystack,
+        'rewrote'      => true,
+        'already_top'  => false,
+    ];
 }
 
 // news-section-source returns the shortcode bytes between the section heading and the next heading

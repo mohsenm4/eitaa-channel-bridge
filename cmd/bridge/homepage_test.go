@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/eitaa"
+	"github.com/mohsenm4/eitaa-channel-bridge/internal/router"
 )
 
 // fakeHelperServer captures one /update-slide-link call so tests can assert
@@ -63,6 +64,122 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b[i:])
+}
+
+// fakeHelperServerForNews captures one /rotate-news-section call.
+type fakeHelperServerForNews struct {
+	srv        *httptest.Server
+	hits       atomic.Int32
+	gotPageID  int
+	gotPostID  int
+	statusCode int
+}
+
+func newFakeHelperForNews(t *testing.T) *fakeHelperServerForNews {
+	t.Helper()
+	f := &fakeHelperServerForNews{statusCode: 200}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Accept both endpoints so the same fake works for tests that touch poster + news in one run.
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/rotate-news-section"):
+			body, _ := io.ReadAll(r.Body)
+			var payload struct {
+				PageID int `json:"page_id"`
+				PostID int `json:"post_id"`
+			}
+			_ = json.Unmarshal(body, &payload)
+			f.gotPageID = payload.PageID
+			f.gotPostID = payload.PostID
+			f.hits.Add(1)
+			w.WriteHeader(f.statusCode)
+			w.Write([]byte(`{"rotated":true,"touched":["_aviaLayoutBuilderCleanData","post_content"]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+// TestProcessOne_RotatesNewsSection_OnAkhbarPublish: after a successful publish of an
+// akhbar-ettelaiyeh post, the bridge must POST a rotate-news-section call with the WP
+// page id and the new post's id. Non-news categories must not trigger this call.
+func TestProcessOne_RotatesNewsSection_OnAkhbarPublish(t *testing.T) {
+	fake := newFakeHelperForNews(t)
+	r, _ := newTestRunner(t, &mockPub{nextID: 1000})
+	// Re-route hashtag "test" to the akhbar-ettelaiyeh slug so processOne classifies the message as news.
+	r.cfg.Publishing.Categories[0].Slug = newsCategorySlug
+	r.rt = router.New("test", r.cfg.Publishing.Categories, nil)
+	r.cfg.WordPress.URL = fake.srv.URL
+	r.homePageID = 2
+	r.home = newHomepageClient(fake.srv.URL, "u", "p")
+
+	msg := eitaa.Message{
+		ID: 50, Channel: "test",
+		Text: "📌 a news item\n\n#test",
+		Date: time.Now(),
+	}
+	if !r.processOne(context.Background(), msg) {
+		t.Fatal("processOne returned false")
+	}
+	if got := fake.hits.Load(); got != 1 {
+		t.Fatalf("expected 1 rotate-news-section call, got %d", got)
+	}
+	if fake.gotPageID != 2 {
+		t.Errorf("page_id = %d, want 2", fake.gotPageID)
+	}
+	if fake.gotPostID != 1001 {
+		t.Errorf("post_id = %d, want 1001 (returned by mockPub)", fake.gotPostID)
+	}
+}
+
+// TestProcessOne_SkipsNewsRotation_WhenCategoryDifferent: any non-news category must not
+// trigger /rotate-news-section even though the homepage client is available.
+func TestProcessOne_SkipsNewsRotation_WhenCategoryDifferent(t *testing.T) {
+	fake := newFakeHelperForNews(t)
+	r, _ := newTestRunner(t, &mockPub{nextID: 1000})
+	// Default test category slug is "test", not the news slug — rotation should NOT fire.
+	r.cfg.WordPress.URL = fake.srv.URL
+	r.homePageID = 2
+	r.home = newHomepageClient(fake.srv.URL, "u", "p")
+
+	msg := eitaa.Message{
+		ID: 51, Channel: "test",
+		Text: "📌 a non-news report\n\n#test",
+		Date: time.Now(),
+	}
+	if !r.processOne(context.Background(), msg) {
+		t.Fatal("processOne returned false")
+	}
+	if got := fake.hits.Load(); got != 0 {
+		t.Errorf("expected zero rotate-news-section calls, got %d", got)
+	}
+}
+
+// TestProcessOne_NewsRotationFailure_DoesNotFailPublish: a 500 from the helper plugin must
+// be logged but must NOT cause processOne to return false (otherwise the post would be
+// re-processed next tick and re-published, creating a duplicate).
+func TestProcessOne_NewsRotationFailure_DoesNotFailPublish(t *testing.T) {
+	fake := newFakeHelperForNews(t)
+	fake.statusCode = 500
+	r, seenPath := newTestRunner(t, &mockPub{nextID: 1000})
+	r.cfg.Publishing.Categories[0].Slug = newsCategorySlug
+	r.rt = router.New("test", r.cfg.Publishing.Categories, nil)
+	r.cfg.WordPress.URL = fake.srv.URL
+	r.homePageID = 2
+	r.home = newHomepageClient(fake.srv.URL, "u", "p")
+
+	msg := eitaa.Message{
+		ID: 52, Channel: "test",
+		Text: "📌 a news item\n\n#test",
+		Date: time.Now(),
+	}
+	if !r.processOne(context.Background(), msg) {
+		t.Fatal("processOne returned false despite publish succeeding")
+	}
+	if !reloadSeen(t, seenPath).Seen("test", 52) {
+		t.Error("publish marked unseen due to homepage rotation failure — would cause duplicate next tick")
+	}
 }
 
 // TestProcessOne_UpdatesHomepagePoster_WhenCategoryMapped: after a successful

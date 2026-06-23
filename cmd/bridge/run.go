@@ -135,7 +135,31 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 		"category", routed.CategoryFa,
 		"title", utils.DisplayTitle(routed.Title, 50))
 	r.maybeUpdateHomepagePoster(ctx, routed, postID)
+	r.maybeRotateNewsSection(ctx, routed, postID)
 	return true
+}
+
+// newsCategorySlug identifies the WP slug whose posts trigger homepage news-card rotation.
+const newsCategorySlug = "akhbar-ettelaiyeh"
+
+// maybeRotateNewsSection cycles the three news cards on the homepage when this publish belongs
+// to the news category. Non-fatal: any failure is logged but the publish stays committed.
+func (r *runner) maybeRotateNewsSection(ctx context.Context, routed router.Routed, postID int) {
+	if routed.Category != newsCategorySlug {
+		return
+	}
+	if r.home == nil || r.homePageID <= 0 {
+		return
+	}
+	uctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := r.home.rotateNewsSection(uctx, r.homePageID, postID); err != nil {
+		r.log.Warn("news-section rotation failed — post is live, homepage cards unchanged",
+			"category", routed.Category, "wp_id", postID, "err", err)
+		return
+	}
+	r.log.Info("news-section rotated",
+		"category", routed.Category, "wp_id", postID, "page_id", r.homePageID)
 }
 
 const homepageDiscoveryTimeout = 30 * time.Second

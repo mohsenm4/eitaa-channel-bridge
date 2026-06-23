@@ -150,6 +150,36 @@ func (h *homepageClient) updatePosterLink(ctx context.Context, pageID int, slide
 	return nil
 }
 
+// rotateNewsSection asks the helper plugin to rotate the three "اخبار و اطلاعیه ها" cards
+// on the homepage: a fresh card built from this post goes on top, the previous first/second
+// shift down, the previous third is dropped. The plugin reads the post's title / permalink /
+// featured-image directly from WP — we only forward the two IDs. Idempotent on the server side.
+func (h *homepageClient) rotateNewsSection(ctx context.Context, pageID, postID int) error {
+	body, _ := json.Marshal(map[string]any{
+		"page_id": pageID,
+		"post_id": postID,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		h.base+"/wp-json/eitaa-bridge/v1/rotate-news-section",
+		bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(h.user, h.pass)
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("Accept", "application/json")
+	resp, err := h.httpc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("rotate-news-section HTTP %d: %s", resp.StatusCode, snippet(respBody))
+	}
+	return nil
+}
+
 // errorSnippetMax caps response-body bytes shown in error logs.
 const errorSnippetMax = 300
 
