@@ -82,8 +82,8 @@ func newFakeHelperForNews(t *testing.T) *fakeHelperServerForNews {
 		case strings.HasSuffix(r.URL.Path, "/reconcile-news-section"):
 			body, _ := io.ReadAll(r.Body)
 			var payload struct {
-				PageID        int    `json:"page_id"`
-				CategorySlug  string `json:"category_slug"`
+				PageID       int    `json:"page_id"`
+				CategorySlug string `json:"category_slug"`
 			}
 			_ = json.Unmarshal(body, &payload)
 			f.gotPageID = payload.PageID
