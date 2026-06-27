@@ -13,13 +13,17 @@ add_action('rest_api_init', function () {
         },
         'callback' => 'eitaa_bridge_clone_post',
         'args'     => [
-            'source_id'      => ['required' => true, 'type' => 'integer'],
-            'title'          => ['required' => true, 'type' => 'string'],
-            'content'        => ['required' => true, 'type' => 'string'],
-            'status'         => ['type' => 'string', 'default' => 'draft'],
-            'category'       => ['type' => 'integer'],
-            'featured_media' => ['type' => 'integer'],
-            'slug'           => ['type' => 'string'],
+            'source_id'            => ['required' => true, 'type' => 'integer'],
+            'title'                => ['required' => true, 'type' => 'string'],
+            'content'              => ['required' => true, 'type' => 'string'],
+            'status'               => ['type' => 'string', 'default' => 'draft'],
+            'category'             => ['type' => 'integer'],
+            'featured_media'       => ['type' => 'integer'],
+            'slug'                 => ['type' => 'string'],
+            // Default true preserves the original behavior (report categories inherit the template's thumb);
+            // bridge passes false for the news category so text-only news posts stay imageless and the
+            // homepage reconcile uses the configured placeholder instead.
+            'inherit_source_thumb' => ['type' => 'boolean', 'default' => true],
         ],
     ]);
 });
@@ -77,10 +81,13 @@ function eitaa_bridge_clone_post(WP_REST_Request $req) {
         }
     }
 
-    // Featured image: prefer the passed-in one, else the source's, so the new post is never imageless.
+    // Featured image priority: caller-supplied → source template's thumb (opt-out via inherit_source_thumb=false).
+    // News posts opt out so their homepage card uses the dedicated placeholder instead of the template image;
+    // report categories keep the inheritance so a text-only report still carries the category-themed image.
+    $inherit_source_thumb = (bool) $req->get_param('inherit_source_thumb');
     if ($featured_media > 0) {
         set_post_thumbnail($new_id, $featured_media);
-    } elseif ($src_thumb = get_post_thumbnail_id($source_id)) {
+    } elseif ($inherit_source_thumb && ($src_thumb = get_post_thumbnail_id($source_id))) {
         set_post_thumbnail($new_id, $src_thumb);
     }
 

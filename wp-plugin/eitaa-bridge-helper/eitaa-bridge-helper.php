@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Eitaa Bridge Helper
  * Description: REST endpoints that clone posts (preserving meta) and edit Avia layout for the eitaa-channel-bridge bot.
- * Version:     1.8.1
+ * Version:     1.8.4
  * Author:      Mohsen
  */
 

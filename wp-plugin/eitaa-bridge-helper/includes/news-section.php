@@ -325,32 +325,44 @@ function eitaa_bridge_reconcile_news_section(WP_REST_Request $req) {
             ['status' => 400]);
     }
 
-    // Fetch a wider window than 3 so that, when some recent posts lack a featured image, we can keep digging until we
-    // either fill three card slots or exhaust the category. The bridge wants three cards on the homepage, not three of
-    // the *newest* posts regardless of completeness.
+    // Top-3 newest posts in the category. We look up by featured image but fall back to a placeholder
+    // attachment (uploaded as media slug 'news-placeholder') so text-only news posts still get a card.
     $posts = get_posts([
         'category'    => $cat->term_id,
         'post_status' => 'publish',
-        'numberposts' => 30,
+        'numberposts' => 3,
         'orderby'     => 'date',
         'order'       => 'DESC',
     ]);
 
-    // Build {title, link, thumb_id, thumb_url} for each candidate post; skip ones missing a featured image.
+    // Resolve the placeholder once: a media attachment whose slug is 'news-placeholder'.
+    // Admin manages this entirely from the WP Media library — no code change needed to swap the image.
+    $placeholder_id  = 0;
+    $placeholder_url = '';
+    if ($att = get_page_by_path('news-placeholder', OBJECT, 'attachment')) {
+        $url = (string) wp_get_attachment_url($att->ID);
+        if ($url !== '' && strpos($url, "'") === false) {
+            $placeholder_id  = (int) $att->ID;
+            $placeholder_url = $url;
+        }
+    }
+
+    // Build {title, link, thumb_id, thumb_url} for each candidate post; use placeholder when no featured image.
     $infos = [];
     foreach ($posts as $p) {
         $thumb_id  = (int) get_post_thumbnail_id($p->ID);
         $thumb_url = $thumb_id > 0 ? (string) wp_get_attachment_url($thumb_id) : '';
-        if ($thumb_id <= 0 || $thumb_url === '') {
-            continue;
+        if ($thumb_id <= 0 || $thumb_url === '' || strpos($thumb_url, "'") !== false) {
+            // Fall back to the configured placeholder; if that's also missing, skip the post entirely.
+            if ($placeholder_id <= 0) {
+                continue;
+            }
+            $thumb_id  = $placeholder_id;
+            $thumb_url = $placeholder_url;
         }
         $title = (string) get_the_title($p->ID);
         $link  = (string) get_permalink($p->ID);
-        if ($title === '' || $link === '') {
-            continue;
-        }
-        // Single-quote in URL would corrupt the av_image shortcode attribute; reject these posts upstream.
-        if (strpos($link, "'") !== false || strpos($thumb_url, "'") !== false) {
+        if ($title === '' || $link === '' || strpos($link, "'") !== false) {
             continue;
         }
         $infos[] = [
@@ -359,11 +371,10 @@ function eitaa_bridge_reconcile_news_section(WP_REST_Request $req) {
             'thumb_id'  => $thumb_id,
             'thumb_url' => $thumb_url,
         ];
-        if (count($infos) >= 3) { break; }
     }
     if (count($infos) === 0) {
         return new WP_Error('eitaa_bridge_no_complete_posts',
-            sprintf('no publishable posts with featured image found in category %s', $category_slug),
+            sprintf('no publishable posts found in category %s (placeholder media slug \'news-placeholder\' also missing)', $category_slug),
             ['status' => 400]);
     }
 
