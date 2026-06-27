@@ -79,7 +79,7 @@ func (p *WordPress) Publish(ctx context.Context, msg router.Routed) (int, error)
 
 	// Preferred: clone via helper plugin so post_meta (WPBakery, theme layout) tags along.
 	if sourceID > 0 && p.useHelper(ctx) {
-		newID, link, err := p.cloneViaHelper(ctx, sourceID, msg.Title, content, catID, featuredID, slug)
+		newID, link, err := p.cloneViaHelper(ctx, sourceID, msg.Title, content, catID, featuredID, slug, msg.Category)
 		if err == nil {
 			p.log.Info("wordpress: published via clone-post helper",
 				"eitaa_id", msg.ID, "wp_id", newID, "source_id", sourceID,
@@ -218,7 +218,7 @@ func (p *WordPress) useHelper(ctx context.Context) bool {
 	return avail
 }
 
-func (p *WordPress) cloneViaHelper(ctx context.Context, sourceID int, title, content string, catID, featuredID int, slug string) (int, string, error) {
+func (p *WordPress) cloneViaHelper(ctx context.Context, sourceID int, title, content string, catID, featuredID int, slug, categorySlug string) (int, string, error) {
 	payload := map[string]any{
 		"source_id": sourceID,
 		"title":     title,
@@ -229,6 +229,13 @@ func (p *WordPress) cloneViaHelper(ctx context.Context, sourceID int, title, con
 	}
 	if featuredID > 0 {
 		payload["featured_media"] = featuredID
+	}
+	// News posts must NOT inherit the template's thumbnail when the Eitaa message has no photo, because
+	// the homepage card then shows the template image instead of our generic placeholder. Other categories
+	// still inherit the template thumb so report posts without photos keep a category-themed image.
+	// String kept in sync with newsCategorySlug in cmd/bridge/run.go.
+	if categorySlug == "akhbar-etelaiyeh" {
+		payload["inherit_source_thumb"] = false
 	}
 	body, _ := json.Marshal(payload)
 	resp, err := p.do(ctx, http.MethodPost, "/wp-json/eitaa-bridge/v1/clone-post", body)

@@ -2,6 +2,7 @@ package publisher
 
 import (
 	"embed"
+	"fmt"
 	"strings"
 
 	"github.com/mohsenm4/eitaa-channel-bridge/internal/router"
@@ -31,19 +32,26 @@ func renderCategoryTemplate(tmpl string, vars map[string]string) string {
 // extractCategoryVars returns the placeholder map for a category, or nil to skip templating.
 func extractCategoryVars(msg router.Routed, featuredID int) map[string]string {
 	switch msg.Category {
-	case "qarz-al-hasaneh", "tavanmandsazi", "nojavanan", "hemayat-khedmat":
+	case "qarz-al-hasaneh", "tavanmandsazi", "nojavanan", "hemayat-khedmat", "akhbar-etelaiyeh":
 		return parseSimpleReport(msg, featuredID)
 	}
 	return nil
 }
 
-// parseSimpleReport is the narrative-style parser: title + date + body (featured image set via featured_media).
-func parseSimpleReport(msg router.Routed, _ int) map[string]string {
+// parseSimpleReport is the narrative-style parser: title + date + body.
+// FEATURED_IMAGE is a ready-to-paste [vc_single_image] shortcode for templates
+// that want the featured image inline; empty when no featured image exists.
+func parseSimpleReport(msg router.Routed, featuredID int) map[string]string {
 	body := strings.TrimSpace(stripMarkersAndHashtags(msg.Text))
+	featuredImg := ""
+	if featuredID > 0 {
+		featuredImg = fmt.Sprintf(`[vc_single_image image="%d" img_size="full" alignment="center"]`, featuredID)
+	}
 	return map[string]string{
-		"TITLE":      msg.Title,
-		"EVENT_DATE": msg.EventDate,
-		"BODY":       body,
+		"TITLE":          msg.Title,
+		"EVENT_DATE":     msg.EventDate,
+		"BODY":           body,
+		"FEATURED_IMAGE": featuredImg,
 	}
 }
 

@@ -150,6 +150,34 @@ func (h *homepageClient) updatePosterLink(ctx context.Context, pageID int, slide
 	return nil
 }
 
+// reconcileNewsSection rebuilds the homepage news cards from the top-3 newest published posts in the given category.
+// Called after a delete (so a trashed post never lingers as a card) and safe to call any time — server-side is idempotent.
+func (h *homepageClient) reconcileNewsSection(ctx context.Context, pageID int, categorySlug string) error {
+	body, _ := json.Marshal(map[string]any{
+		"page_id":       pageID,
+		"category_slug": categorySlug,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		h.base+"/wp-json/eitaa-bridge/v1/reconcile-news-section",
+		bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(h.user, h.pass)
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("Accept", "application/json")
+	resp, err := h.httpc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("reconcile-news-section HTTP %d: %s", resp.StatusCode, snippet(respBody))
+	}
+	return nil
+}
+
 // errorSnippetMax caps response-body bytes shown in error logs.
 const errorSnippetMax = 300
 

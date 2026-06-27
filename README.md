@@ -196,12 +196,7 @@ All config is environment variables. Copy `.env.example` to `.env` and fill in v
 
 ### Homepage auto-update
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `HOMEPAGE_PAGE_ID` | `0` (auto) | Static front page ID — bridge discovers it from WP settings if `0` |
-| `POSTER_LINKS` | *(empty)* | Manual override: comma-separated `hashtag\|av_uid` pairs for poster slides |
-
-See [Homepage auto-update](#7-homepage-auto-update) for details.
+No configuration needed — see [Homepage auto-update](#7-homepage-auto-update) for what the bridge does automatically.
 
 ### Health monitoring
 
@@ -240,21 +235,13 @@ After each publish the bridge can automatically rewrite the poster slideshow on 
 
 **How it works:**
 
-1. On startup, the bridge asks WP which page is the static front page (or uses `HOMEPAGE_PAGE_ID`).
+1. On startup, the bridge asks WP which page is the static front page (Settings → Reading).
 2. It walks the `av_slide` elements on that page and maps each slide to a category by matching the poster image filename against known category slugs.
 3. After each new post is published, it rewrites the matching slide's link via the helper plugin endpoint.
 
 **Requirements:**
 - `eitaa-bridge-helper` plugin v1.5+ must be installed and active.
 - Poster images should be named after the category slug (e.g. `hemayat-khedmat-poster.png`) so auto-discovery works.
-
-**Manual override:**
-
-If auto-discovery fails or you need a different mapping, set `POSTER_LINKS` explicitly:
-
-```env
-POSTER_LINKS="حمایت_خدمت|av-1234,قرض_الحسنه|av-5678"
-```
 
 ---
 

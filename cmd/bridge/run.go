@@ -30,11 +30,14 @@ type runner struct {
 	pub    publisher.Publisher
 	client *eitaa.Client
 	rt     *router.Router
-	home   *homepageClient
 
-	// publishFailStreak counts consecutive Publish failures; flips healthcheck to DOWN when it crosses the threshold.
-	publishFailStreak int
-	// publishFailAlerted is true after we've sent the /fail ping for the current streak — avoids spamming the ping.
+	// Homepage state, discovered at runtime; nil home disables homepage features this run.
+	home        *homepageClient
+	homePageID  int
+	posterLinks map[string]string
+
+	// publishFailStreak crosses HealthcheckFailureThreshold → ping /fail. Alerted suppresses duplicate pings.
+	publishFailStreak  int
 	publishFailAlerted bool
 }
 
@@ -44,10 +47,6 @@ func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
 		return nil, err
 	}
 	pub := publisher.NewWordPress(cfg.WordPress, log)
-	var home *homepageClient
-	if cfg.Homepage.PageID > 0 {
-		home = newHomepageClient(cfg.WordPress.URL, cfg.WordPress.Username, cfg.WordPress.AppPassword)
-	}
 	return &runner{
 		cfg:    cfg,
 		log:    log,
@@ -55,7 +54,6 @@ func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
 		pub:    pub,
 		client: eitaa.New(),
 		rt:     router.New(cfg.Source.Channel, cfg.Publishing.Categories, cfg.Publishing.Default),
-		home:   home,
 	}, nil
 }
 
@@ -133,12 +131,17 @@ func (r *runner) processOne(ctx context.Context, m eitaa.Message) bool {
 		"category", routed.CategoryFa,
 		"title", utils.DisplayTitle(routed.Title, 50))
 	r.maybeUpdateHomepagePoster(ctx, routed, postID)
+	if routed.Category == newsCategorySlug {
+		r.maybeReconcileNewsSection(ctx)
+	}
 	return true
 }
 
+const newsCategorySlug = "akhbar-etelaiyeh"
+
 const homepageDiscoveryTimeout = 30 * time.Second
 
-// discoverHomepage auto-fills cfg.Homepage.{PageID,PosterLinks} from WP; manual .env entries win and failures are non-fatal.
+// discoverHomepage fills r.homePageID and r.posterLinks from WP; failures are non-fatal and just disable the homepage features for this run.
 func (r *runner) discoverHomepage(ctx context.Context) {
 	if !r.ensureHomepageClient() {
 		return
@@ -166,12 +169,9 @@ func (r *runner) ensureHomepageClient() bool {
 
 // discoverFrontPageID asks WP for the static front-page id; returns false to disable homepage features this run.
 func (r *runner) discoverFrontPageID(ctx context.Context) bool {
-	if r.cfg.Homepage.PageID != 0 {
-		return true
-	}
 	pageID, err := r.home.detectFrontPageID(ctx)
 	if err != nil {
-		r.log.Warn("homepage discovery: front-page id lookup failed — set HOMEPAGE_PAGE_ID manually to enable poster updates", "err", err)
+		r.log.Warn("homepage discovery: front-page id lookup failed — homepage features disabled this run", "err", err)
 		r.home = nil
 		return false
 	}
@@ -180,17 +180,14 @@ func (r *runner) discoverFrontPageID(ctx context.Context) bool {
 		r.home = nil
 		return false
 	}
-	r.cfg.Homepage.PageID = pageID
+	r.homePageID = pageID
 	r.log.Info("homepage page id discovered", "page_id", pageID)
 	return true
 }
 
 // autoMapPostersToCategories pairs each av_slide poster with a category whose WP slug appears inside the image slug.
 func (r *runner) autoMapPostersToCategories(ctx context.Context) {
-	if len(r.cfg.Homepage.PosterLinks) > 0 {
-		return
-	}
-	slides, err := r.home.listSlides(ctx, r.cfg.Homepage.PageID)
+	slides, err := r.home.listSlides(ctx, r.homePageID)
 	if err != nil {
 		r.log.Warn("homepage discovery: list-slides failed — poster updates disabled this run", "err", err)
 		return
@@ -199,7 +196,7 @@ func (r *runner) autoMapPostersToCategories(ctx context.Context) {
 	for _, slide := range slides {
 		r.mapSlideToCategory(ctx, slide, mapping)
 	}
-	r.cfg.Homepage.PosterLinks = mapping
+	r.posterLinks = mapping
 	if len(mapping) == 0 {
 		r.log.Info("homepage discovery: no poster image slug matched any category — name posters like \"<category-slug>-something.jpg\" to enable")
 	}
@@ -235,14 +232,14 @@ func (r *runner) mapSlideToCategory(ctx context.Context, slide Slide, mapping ma
 
 // maybeUpdateHomepagePoster repoints the matching homepage poster's link at the freshly-published post; non-fatal on failure.
 func (r *runner) maybeUpdateHomepagePoster(ctx context.Context, routed router.Routed, postID int) {
-	if r.home == nil || len(r.cfg.Homepage.PosterLinks) == 0 || r.cfg.Homepage.PageID <= 0 {
+	if r.home == nil || len(r.posterLinks) == 0 || r.homePageID <= 0 {
 		return
 	}
-	uid, ok := r.cfg.Homepage.PosterLinks[routed.Category]
+	uid, ok := r.posterLinks[routed.Category]
 	if !ok {
-		// Fall back to matching by hashtag in case POSTER_LINKS was keyed off the hashtag, not the slug.
+		// Fall back to matching by hashtag in case the auto-mapping keyed off the hashtag, not the slug.
 		for _, tag := range routed.Hashtags {
-			if u, found := r.cfg.Homepage.PosterLinks[tag]; found {
+			if u, found := r.posterLinks[tag]; found {
 				uid = u
 				ok = true
 				break
@@ -255,7 +252,7 @@ func (r *runner) maybeUpdateHomepagePoster(ctx context.Context, routed router.Ro
 	link := fmt.Sprintf("%s/?p=%d", strings.TrimRight(r.cfg.WordPress.URL, "/"), postID)
 	uctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if err := r.home.updatePosterLink(uctx, r.cfg.Homepage.PageID, uid, link); err != nil {
+	if err := r.home.updatePosterLink(uctx, r.homePageID, uid, link); err != nil {
 		r.log.Warn("homepage poster update failed — post is live, poster keeps prior link",
 			"category", routed.Category, "slide_uid", uid, "wp_id", postID, "err", err)
 		return
@@ -304,17 +301,13 @@ func (r *runner) tick(ctx context.Context) {
 	}
 }
 
-// warnIfSilentFetch surfaces a likely Eitaa markup change: a successful fetch
-// that parsed zero messages while the seen-set for this channel is non-empty.
-// Without this warning a parser break is invisible — healthcheck stays green
-// and the bot quietly stops publishing.
+// warnIfSilentFetch flags a likely Eitaa markup change: empty fetch with non-empty seen-set.
 func (r *runner) warnIfSilentFetch(msgs []eitaa.Message) {
 	if len(msgs) > 0 {
 		return
 	}
 	seen := r.store.Count(r.cfg.Source.Channel)
 	if seen == 0 {
-		// Legitimate empty state — first run on a fresh channel.
 		return
 	}
 	r.log.Warn("fetch returned zero messages while seen-set is non-empty — Eitaa markup may have changed",
@@ -400,6 +393,37 @@ func (r *runner) syncDeletion(ctx context.Context, id int, entry state.Entry) {
 		r.log.Warn("state save failed after deletion sync", "id", id, "err", err)
 	}
 	r.log.Info("deletion synced", "id", id, "wp_id", entry.PostID)
+	// Whatever was deleted, refresh the homepage news section: if it was a news post the freed
+	// slot is filled from the top-3 newest non-trashed posts; if it wasn't, the call is a no-op.
+	r.maybeReconcileNewsSection(ctx)
+}
+
+// maybeReconcileNewsSection rebuilds the news cards from the top-3 newest published news posts; non-fatal on failure.
+// Sends the WP category Label (Persian name) rather than newsCategorySlug because the WP category itself is keyed by its
+// Persian slug/name, while newsCategorySlug only describes the bridge's post-slug prefix.
+func (r *runner) maybeReconcileNewsSection(ctx context.Context) {
+	if r.home == nil || r.homePageID <= 0 {
+		return
+	}
+	label := ""
+	for _, c := range r.cfg.Publishing.Categories {
+		if c.Slug == newsCategorySlug {
+			label = c.Label
+			break
+		}
+	}
+	if label == "" {
+		// No WP category mapped for the news slug — nothing to reconcile against.
+		return
+	}
+	uctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := r.home.reconcileNewsSection(uctx, r.homePageID, label); err != nil {
+		r.log.Warn("news-section reconcile failed — homepage cards may show a deleted post",
+			"page_id", r.homePageID, "err", err)
+		return
+	}
+	r.log.Info("news-section reconciled", "page_id", r.homePageID, "category", label)
 }
 
 // backfill walks Eitaa's ?before= pagination backwards up to max older messages.
@@ -441,6 +465,9 @@ func (r *runner) backfill(ctx context.Context, max int) {
 func (r *runner) Run(ctx context.Context) {
 	go r.runHealthcheckLoop(ctx)
 	r.discoverHomepage(ctx)
+	// Sync the homepage news section once on startup: covers the case where the bridge crashed between a publish
+	// and the publish-time reconcile, leaving the section pointing at stale (or deleted) posts (issue #47).
+	r.maybeReconcileNewsSection(ctx)
 	if r.store.Count(r.cfg.Source.Channel) == 0 && r.cfg.Source.BackfillMax > 0 {
 		r.backfill(ctx, r.cfg.Source.BackfillMax)
 	}
@@ -497,9 +524,8 @@ func runRun(log *slog.Logger, args []string) {
 		"categories", strings.Join(categoryTags(cfg.Publishing.Categories), ","),
 		"inbox", strings.Join(cfg.Publishing.InboxHashtags, ","),
 		"skip", strings.Join(cfg.Publishing.SkipHashtags, ","),
-		"homepage_page", cfg.Homepage.PageID,
-		"posters", len(cfg.Homepage.PosterLinks),
 	)
+	// Homepage state is logged after discoverHomepage runs (see Run).
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
