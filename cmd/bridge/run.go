@@ -465,6 +465,9 @@ func (r *runner) backfill(ctx context.Context, max int) {
 func (r *runner) Run(ctx context.Context) {
 	go r.runHealthcheckLoop(ctx)
 	r.discoverHomepage(ctx)
+	// Sync the homepage news section once on startup: covers the case where the bridge crashed between a publish
+	// and the publish-time reconcile, leaving the section pointing at stale (or deleted) posts (issue #47).
+	r.maybeReconcileNewsSection(ctx)
 	if r.store.Count(r.cfg.Source.Channel) == 0 && r.cfg.Source.BackfillMax > 0 {
 		r.backfill(ctx, r.cfg.Source.BackfillMax)
 	}
