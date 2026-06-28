@@ -87,3 +87,50 @@ func TestParseDirectThreadsBaseURL(t *testing.T) {
 		t.Errorf("Photo = %q, want %q", msgs[0].Photos[0], want)
 	}
 }
+
+// TestParseNormalizesBaseURL pins down two ergonomics rules: a trailing slash
+// on baseURL must not produce a double slash in output, and an empty baseURL
+// must fall back to the default rather than emitting bare "/ch/<id>" links.
+func TestParseNormalizesBaseURL(t *testing.T) {
+	const channel = "ch"
+	const msgID = 9
+
+	t.Run("trailing slash is trimmed", func(t *testing.T) {
+		msgs, err := Parse("https://staging.example/", channel, channelPage(channel, msgID))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("got %d messages, want 1", len(msgs))
+		}
+		if want := "https://staging.example/ch/9"; msgs[0].Link != want {
+			t.Errorf("Link = %q, want %q", msgs[0].Link, want)
+		}
+		if want := "https://staging.example/file/abc.jpg"; msgs[0].Photos[0] != want {
+			t.Errorf("Photo = %q, want %q", msgs[0].Photos[0], want)
+		}
+		// Belt-and-suspenders: no "//" allowed after the scheme separator.
+		for _, got := range []string{msgs[0].Link, msgs[0].Photos[0]} {
+			rest := strings.TrimPrefix(strings.TrimPrefix(got, "https://"), "http://")
+			if strings.Contains(rest, "//") {
+				t.Errorf("output has double slash: %q", got)
+			}
+		}
+	})
+
+	t.Run("empty baseURL falls back to default", func(t *testing.T) {
+		msgs, err := Parse("", channel, channelPage(channel, msgID))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if len(msgs) != 1 {
+			t.Fatalf("got %d messages, want 1", len(msgs))
+		}
+		if !strings.HasPrefix(msgs[0].Link, defaultBaseURL+"/") {
+			t.Errorf("Link = %q, want it to start with %q", msgs[0].Link, defaultBaseURL+"/")
+		}
+		if !strings.HasPrefix(msgs[0].Photos[0], defaultBaseURL+"/") {
+			t.Errorf("Photo = %q, want it to start with %q", msgs[0].Photos[0], defaultBaseURL+"/")
+		}
+	})
+}

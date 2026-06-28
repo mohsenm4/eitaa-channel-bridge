@@ -101,11 +101,12 @@ func (c *Client) FetchBefore(ctx context.Context, channel string, beforeID int) 
 	return Parse(c.BaseURL, channel, raw)
 }
 
-// Parse extracts messages from a channel page's HTML. baseURL is the host that
-// permalinks and relative photo URLs should be resolved against — pass the same
-// value the page was fetched from so tests pointing at httptest get consistent
-// output instead of links back to eitaa.com.
 func Parse(baseURL, channel, htmlSrc string) ([]Message, error) {
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+
 	doc, err := html.Parse(strings.NewReader(htmlSrc))
 	if err != nil {
 		return nil, fmt.Errorf("parse html: %w", err)
