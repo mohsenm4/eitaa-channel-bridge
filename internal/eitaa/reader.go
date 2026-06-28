@@ -90,7 +90,7 @@ func (c *Client) Fetch(ctx context.Context, channel string) ([]Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Parse(channel, raw)
+	return Parse(c.BaseURL, channel, raw)
 }
 
 func (c *Client) FetchBefore(ctx context.Context, channel string, beforeID int) ([]Message, error) {
@@ -98,10 +98,14 @@ func (c *Client) FetchBefore(ctx context.Context, channel string, beforeID int) 
 	if err != nil {
 		return nil, err
 	}
-	return Parse(channel, raw)
+	return Parse(c.BaseURL, channel, raw)
 }
 
-func Parse(channel, htmlSrc string) ([]Message, error) {
+// Parse extracts messages from a channel page's HTML. baseURL is the host that
+// permalinks and relative photo URLs should be resolved against — pass the same
+// value the page was fetched from so tests pointing at httptest get consistent
+// output instead of links back to eitaa.com.
+func Parse(baseURL, channel, htmlSrc string) ([]Message, error) {
 	doc, err := html.Parse(strings.NewReader(htmlSrc))
 	if err != nil {
 		return nil, fmt.Errorf("parse html: %w", err)
@@ -119,14 +123,14 @@ func Parse(channel, htmlSrc string) ([]Message, error) {
 		if post == "" {
 			return
 		}
-		msgs = append(msgs, parseMessage(channel, n, post))
+		msgs = append(msgs, parseMessage(baseURL, channel, n, post))
 	})
 
 	sortByID(msgs)
 	return msgs, nil
 }
 
-func parseMessage(channel string, root *html.Node, dataPost string) Message {
+func parseMessage(baseURL, channel string, root *html.Node, dataPost string) Message {
 	msg := Message{
 		Channel: channel,
 	}
@@ -136,7 +140,7 @@ func parseMessage(channel string, root *html.Node, dataPost string) Message {
 			msg.ID = id
 		}
 	}
-	msg.Link = fmt.Sprintf("%s/%s/%d", defaultBaseURL, channel, msg.ID)
+	msg.Link = fmt.Sprintf("%s/%s/%d", baseURL, channel, msg.ID)
 
 	walkDOM(root, func(n *html.Node) {
 		if n.Type != html.ElementNode {
@@ -163,7 +167,7 @@ func parseMessage(channel string, root *html.Node, dataPost string) Message {
 		case n.Data == "a" && hasClass(n, "etme_widget_message_photo_wrap"),
 			n.Data == "div" && hasClass(n, "etme_widget_message_photo"):
 			if u := extractBackgroundURL(attr(n, "style")); u != "" {
-				msg.Photos = append(msg.Photos, absURL(u))
+				msg.Photos = append(msg.Photos, absURL(baseURL, u))
 			}
 		case n.Data == "a" && hasClass(n, "etme_widget_message_reply"):
 			if id := parseReplyID(attr(n, "href")); id > 0 {
@@ -251,12 +255,12 @@ func parseReplyID(href string) int {
 	return 0
 }
 
-func absURL(u string) string {
+func absURL(baseURL, u string) string {
 	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
 		return u
 	}
 	if strings.HasPrefix(u, "/") {
-		return defaultBaseURL + u
+		return baseURL + u
 	}
 	return u
 }

@@ -40,7 +40,7 @@ func runDump(log *slog.Logger, args []string) {
 		utils.Fatal("write raw: %v", err)
 	}
 
-	msgs, err := eitaa.Parse(cfg.Source.Channel, raw)
+	msgs, err := eitaa.Parse(client.BaseURL, cfg.Source.Channel, raw)
 	if err != nil {
 		utils.Fatal("parse: %v", err)
 	}
