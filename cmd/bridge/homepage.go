@@ -18,6 +18,10 @@ type homepageClient struct {
 	user  string
 	pass  string
 	httpc *http.Client
+	// catIDCache memoizes slug→term-ID lookups so reconcilePosterSlides costs one HTTP call per slot
+	// instead of two. The runner calls homepageClient from a single goroutine, so no mutex is needed.
+	// We never invalidate; the publishing categories don't change at runtime.
+	catIDCache map[string]int
 }
 
 func newHomepageClient(wpURL, user, pass string) *homepageClient {
@@ -30,6 +34,7 @@ func newHomepageClient(wpURL, user, pass string) *homepageClient {
 			// fatemyoon.ir's TLS cert is expired (same workaround as the publisher).
 			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
 		},
+		catIDCache: map[string]int{},
 	}
 }
 
@@ -148,6 +153,69 @@ func (h *homepageClient) updatePosterLink(ctx context.Context, pageID int, slide
 		return fmt.Errorf("update-slide-link HTTP %d: %s", resp.StatusCode, snippet(respBody))
 	}
 	return nil
+}
+
+// categoryIDBySlug resolves a WP category slug to its term ID via the public WP REST API, caching the result.
+// Returns an error if the slug doesn't exist; this is treated as fatal by the caller because every configured
+// publishing category is expected to be a real term.
+func (h *homepageClient) categoryIDBySlug(ctx context.Context, slug string) (int, error) {
+	if slug == "" {
+		return 0, fmt.Errorf("categoryIDBySlug: empty slug")
+	}
+	if id, ok := h.catIDCache[slug]; ok {
+		return id, nil
+	}
+	body, err := h.getJSON(ctx, fmt.Sprintf("/wp-json/wp/v2/categories?slug=%s&_fields=id", slug))
+	if err != nil {
+		return 0, err
+	}
+	var out []struct {
+		ID int `json:"id"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return 0, fmt.Errorf("decode categories: %w", err)
+	}
+	if len(out) == 0 || out[0].ID <= 0 {
+		return 0, fmt.Errorf("category slug %q not found", slug)
+	}
+	h.catIDCache[slug] = out[0].ID
+	return out[0].ID, nil
+}
+
+// newestPostInCategory returns the permalink of the newest published post in the given category.
+// found == false (with err == nil) means the category has zero published posts — caller should fall back to the
+// archive URL so a homepage slide stays clickable instead of pointing at a trashed post.
+func (h *homepageClient) newestPostInCategory(ctx context.Context, categorySlug string) (link string, found bool, err error) {
+	id, err := h.categoryIDBySlug(ctx, categorySlug)
+	if err != nil {
+		return "", false, err
+	}
+	body, gerr := h.getJSON(ctx, fmt.Sprintf(
+		"/wp-json/wp/v2/posts?categories=%d&per_page=1&status=publish&orderby=date&order=desc&_fields=link", id))
+	if gerr != nil {
+		return "", false, gerr
+	}
+	var out []struct {
+		Link string `json:"link"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", false, fmt.Errorf("decode posts: %w", err)
+	}
+	if len(out) == 0 || out[0].Link == "" {
+		return "", false, nil
+	}
+	return out[0].Link, true, nil
+}
+
+// categoryArchiveURL returns the WP category archive URL (used as a slide fallback when the category has no
+// published posts). Relies on categoryIDBySlug's cache, so when called right after newestPostInCategory it
+// makes no extra HTTP call.
+func (h *homepageClient) categoryArchiveURL(ctx context.Context, categorySlug string) (string, error) {
+	id, err := h.categoryIDBySlug(ctx, categorySlug)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s/?cat=%d", h.base, id), nil
 }
 
 // reconcileNewsSection rebuilds the homepage news cards from the top-3 newest published posts in the given category.

@@ -396,6 +396,58 @@ func (r *runner) syncDeletion(ctx context.Context, id int, entry state.Entry) {
 	// Whatever was deleted, refresh the homepage news section: if it was a news post the freed
 	// slot is filled from the top-3 newest non-trashed posts; if it wasn't, the call is a no-op.
 	r.maybeReconcileNewsSection(ctx)
+	// Same idea for the per-unit poster slides (issue #50): without this, deleting the latest report
+	// of a unit leaves the slide's link='manually,...' pointing at the now-trashed post.
+	r.reconcilePosterSlides(ctx)
+}
+
+// reconcilePosterSlides walks every auto-mapped homepage poster and re-points its link at the newest published
+// post in that category, falling back to the category archive URL when the category has no published posts left.
+// Called on delete (so a deleted "latest report" doesn't leave the unit's poster pointing at a 404) and on
+// startup (covers a bridge crash mid-cycle). Non-fatal on failure: a single slide's error is logged and skipped.
+// Idempotent on the helper side — /update-slide-link returns a no-op when the link is already correct.
+func (r *runner) reconcilePosterSlides(ctx context.Context) {
+	if r.home == nil || len(r.posterLinks) == 0 || r.homePageID <= 0 {
+		return
+	}
+	for _, cat := range r.cfg.Publishing.Categories {
+		uid, ok := r.posterLinks[cat.Hashtag]
+		if !ok || uid == "" {
+			continue
+		}
+		// Look up newest post in this category. If none, use the archive URL so the slide stays clickable.
+		lctx, lcancel := context.WithTimeout(ctx, 30*time.Second)
+		link, found, err := r.home.newestPostInCategory(lctx, cat.Slug)
+		lcancel()
+		if err != nil {
+			r.log.Warn("poster reconcile: newest-post lookup failed — slide unchanged",
+				"category", cat.Slug, "slide_uid", uid, "err", err)
+			continue
+		}
+		fallback := false
+		if !found {
+			actx, acancel := context.WithTimeout(ctx, 30*time.Second)
+			archiveURL, aerr := r.home.categoryArchiveURL(actx, cat.Slug)
+			acancel()
+			if aerr != nil {
+				r.log.Warn("poster reconcile: archive-url lookup failed — slide unchanged",
+					"category", cat.Slug, "slide_uid", uid, "err", aerr)
+				continue
+			}
+			link = archiveURL
+			fallback = true
+		}
+		uctx, ucancel := context.WithTimeout(ctx, 30*time.Second)
+		uerr := r.home.updatePosterLink(uctx, r.homePageID, uid, link)
+		ucancel()
+		if uerr != nil {
+			r.log.Warn("poster reconcile: updatePosterLink failed — slide may still point at a stale post",
+				"category", cat.Slug, "slide_uid", uid, "link", link, "err", uerr)
+			continue
+		}
+		r.log.Info("poster reconciled",
+			"category", cat.Slug, "slide_uid", uid, "link", link, "fallback_to_archive", fallback)
+	}
 }
 
 // maybeReconcileNewsSection rebuilds the news cards from the top-3 newest published news posts; non-fatal on failure.
@@ -468,6 +520,9 @@ func (r *runner) Run(ctx context.Context) {
 	// Sync the homepage news section once on startup: covers the case where the bridge crashed between a publish
 	// and the publish-time reconcile, leaving the section pointing at stale (or deleted) posts (issue #47).
 	r.maybeReconcileNewsSection(ctx)
+	// Same rationale for the per-unit poster slides (issue #50): a crash between syncDeletion's Delete call
+	// and the per-delete reconcile would leave the slide pointing at a now-trashed post.
+	r.reconcilePosterSlides(ctx)
 	if r.store.Count(r.cfg.Source.Channel) == 0 && r.cfg.Source.BackfillMax > 0 {
 		r.backfill(ctx, r.cfg.Source.BackfillMax)
 	}

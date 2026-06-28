@@ -43,11 +43,16 @@ function eitaa_bridge_update_slide_link(WP_REST_Request $req) {
 
     // Avia stores image-slide links as link='manually,<url>'; build that verbatim so other styles (e.g. 'lightbox') aren't disturbed.
     $new_link_val = $link === '' ? '' : 'manually,' . $link;
-    $rewriter = function ($block) use ($uid, $new_link_val) {
+    // Tracked across all rewriter calls so we can tell "uid never appeared" (404) apart from
+    // "uid appeared but the link was already correct" (200 no-op). The poster-reconcile loop
+    // calls this endpoint on every cycle, so the no-op path must not look like an error.
+    $uid_found = false;
+    $rewriter = function ($block) use ($uid, $new_link_val, &$uid_found) {
         $attrs = $block[1];
         if (!preg_match("#av_uid='" . preg_quote($uid, '#') . "'#u", $attrs)) {
             return $block[0]; // not our slide — leave untouched
         }
+        $uid_found = true;
         $newAttrs = preg_replace(
             "#\\blink='[^']*'#u",
             "link='" . $new_link_val . "'",
@@ -89,10 +94,21 @@ function eitaa_bridge_update_slide_link(WP_REST_Request $req) {
         wp_update_post(['ID' => $page_id, 'post_content' => $new_content], true);
         $touched[] = 'post_content';
     }
-    if ($touched === []) {
+    if (!$uid_found) {
         return new WP_Error('eitaa_bridge_uid_not_found',
             sprintf('no av_slide with av_uid=%s found on page %d', $uid, $page_id),
             ['status' => 404]);
+    }
+    if ($touched === []) {
+        // UID exists but already points at $new_link_val — caller is doing a no-op refresh, so skip the cache bust too.
+        return [
+            'page_id'  => $page_id,
+            'uid'      => $uid,
+            'new_link' => $new_link_val,
+            'updated'  => false,
+            'reason'   => 'link already up to date',
+            'touched'  => [],
+        ];
     }
 
     $caches = eitaa_bridge_bust_caches($page_id);
@@ -101,6 +117,7 @@ function eitaa_bridge_update_slide_link(WP_REST_Request $req) {
         'page_id'        => $page_id,
         'uid'            => $uid,
         'new_link'       => $new_link_val,
+        'updated'        => true,
         'touched'        => $touched,
         'cleared_caches' => $caches['cleared_caches'],
         'cache_actions'  => $caches['cache_actions'],
