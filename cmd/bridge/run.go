@@ -415,9 +415,12 @@ func (r *runner) reconcilePosterSlides(ctx context.Context) {
 		if !ok || uid == "" {
 			continue
 		}
+		// The WP term is keyed by its Persian Label, not by cat.Slug (which is the bridge's post-slug prefix and
+		// rarely matches the term slug). Same compromise as maybeReconcileNewsSection.
+		catKey := cat.Label
 		// Look up newest post in this category. If none, use the archive URL so the slide stays clickable.
 		lctx, lcancel := context.WithTimeout(ctx, 30*time.Second)
-		link, found, err := r.home.newestPostInCategory(lctx, cat.Slug)
+		link, found, err := r.home.newestPostInCategory(lctx, catKey)
 		lcancel()
 		if err != nil {
 			r.log.Warn("poster reconcile: newest-post lookup failed — slide unchanged",
@@ -427,7 +430,7 @@ func (r *runner) reconcilePosterSlides(ctx context.Context) {
 		fallback := false
 		if !found {
 			actx, acancel := context.WithTimeout(ctx, 30*time.Second)
-			archiveURL, aerr := r.home.categoryArchiveURL(actx, cat.Slug)
+			archiveURL, aerr := r.home.categoryArchiveURL(actx, catKey)
 			acancel()
 			if aerr != nil {
 				r.log.Warn("poster reconcile: archive-url lookup failed — slide unchanged",
