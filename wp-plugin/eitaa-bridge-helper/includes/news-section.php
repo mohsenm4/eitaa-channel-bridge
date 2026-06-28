@@ -144,6 +144,12 @@ function eitaa_bridge_rotate_news_section(WP_REST_Request $req) {
             sprintf('post %d is missing title, permalink, or featured image — cannot build news card', $post_id),
             ['status' => 400]);
     }
+    // A single quote in the permalink would break the [av_image link='manually,...'] shortcode below.
+    if (strpos($post_link, "'") !== false) {
+        return new WP_Error('eitaa_bridge_bad_link',
+            "link must not contain a single quote",
+            ['status' => 400]);
+    }
 
     $touched         = [];
     $skipped_already = false;
@@ -270,8 +276,10 @@ function eitaa_bridge_rotate_news_in_text(string $haystack, string $heading_text
                   . substr($new_card, $img_pos + strlen($img_open));
     }
     // <h4> appears once per card (inside the [av_textblock]); safe to do unscoped.
+    // esc_html() so a title containing literal '</h4>' (or any other HTML) renders as text
+    // instead of closing the heading early and breaking the Avia layout.
     $new_card = preg_replace('#<h4 style="text-align: center;">[\s\S]*?</h4>#u',
-        '<h4 style="text-align: center;">' . $new_title . '</h4>', $new_card, 1);
+        '<h4 style="text-align: center;">' . esc_html($new_title) . '</h4>', $new_card, 1);
 
     // TEST MODE (append-only): keep all existing cards, just insert the new one on top.
     // The previous first card loses its `first` flag (only one card can be first).

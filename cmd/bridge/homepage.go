@@ -18,6 +18,10 @@ type homepageClient struct {
 	user  string
 	pass  string
 	httpc *http.Client
+	// catIDCache memoizes slug→term-ID lookups so reconcilePosterSlides costs one HTTP call per slot
+	// instead of two. The runner calls homepageClient from a single goroutine, so no mutex is needed.
+	// We never invalidate; the publishing categories don't change at runtime.
+	catIDCache map[string]int
 }
 
 func newHomepageClient(wpURL, user, pass string) *homepageClient {
@@ -30,6 +34,7 @@ func newHomepageClient(wpURL, user, pass string) *homepageClient {
 			// fatemyoon.ir's TLS cert is expired (same workaround as the publisher).
 			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
 		},
+		catIDCache: map[string]int{},
 	}
 }
 
@@ -148,6 +153,110 @@ func (h *homepageClient) updatePosterLink(ctx context.Context, pageID int, slide
 		return fmt.Errorf("update-slide-link HTTP %d: %s", resp.StatusCode, snippet(respBody))
 	}
 	return nil
+}
+
+// loadCategoryCache lists every WP category once (paged in chunks of 100) and indexes each one by both its slug
+// and its name. We need both because the bridge's config carries a transliterated English Slug (used as a post-
+// slug prefix) and a Persian Label (used as the WP term's name); the WP term itself usually has a Persian slug
+// distinct from cat.Slug, so a direct slug-equality match against cat.Slug will miss. Same compromise as
+// /reconcile-news-section, which accepts "slug or name" via get_category_by_slug + get_term_by('name', ...).
+func (h *homepageClient) loadCategoryCache(ctx context.Context) error {
+	if len(h.catIDCache) > 0 {
+		return nil
+	}
+	for page := 1; ; page++ {
+		body, err := h.getJSON(ctx, fmt.Sprintf(
+			"/wp-json/wp/v2/categories?per_page=100&page=%d&_fields=id,slug,name", page))
+		if err != nil {
+			// WP REST returns 400 with code rest_post_invalid_page_number when paging past the last page;
+			// the first call still has to succeed, so only swallow the error if we already loaded some.
+			if page > 1 {
+				break
+			}
+			return err
+		}
+		var cats []struct {
+			ID   int    `json:"id"`
+			Slug string `json:"slug"`
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(body, &cats); err != nil {
+			return fmt.Errorf("decode categories: %w", err)
+		}
+		if len(cats) == 0 {
+			break
+		}
+		for _, c := range cats {
+			if c.ID <= 0 {
+				continue
+			}
+			if c.Slug != "" {
+				h.catIDCache[c.Slug] = c.ID
+			}
+			if c.Name != "" {
+				h.catIDCache[c.Name] = c.ID
+			}
+		}
+		if len(cats) < 100 {
+			break
+		}
+	}
+	if len(h.catIDCache) == 0 {
+		return fmt.Errorf("no WP categories returned")
+	}
+	return nil
+}
+
+// categoryIDByLabelOrSlug resolves a WP category to its term ID by either its slug or its name. The cache is
+// populated lazily on first call.
+func (h *homepageClient) categoryIDByLabelOrSlug(ctx context.Context, key string) (int, error) {
+	if key == "" {
+		return 0, fmt.Errorf("categoryIDByLabelOrSlug: empty key")
+	}
+	if err := h.loadCategoryCache(ctx); err != nil {
+		return 0, err
+	}
+	if id, ok := h.catIDCache[key]; ok {
+		return id, nil
+	}
+	return 0, fmt.Errorf("category %q not found", key)
+}
+
+// newestPostInCategory returns the permalink of the newest published post in the given category.
+// found == false (with err == nil) means the category has zero published posts — caller should fall back to the
+// archive URL so a homepage slide stays clickable instead of pointing at a trashed post.
+// categoryKey is matched against either the WP term's slug or its name (Persian Label works).
+func (h *homepageClient) newestPostInCategory(ctx context.Context, categoryKey string) (link string, found bool, err error) {
+	id, err := h.categoryIDByLabelOrSlug(ctx, categoryKey)
+	if err != nil {
+		return "", false, err
+	}
+	body, gerr := h.getJSON(ctx, fmt.Sprintf(
+		"/wp-json/wp/v2/posts?categories=%d&per_page=1&status=publish&orderby=date&order=desc&_fields=link", id))
+	if gerr != nil {
+		return "", false, gerr
+	}
+	var out []struct {
+		Link string `json:"link"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", false, fmt.Errorf("decode posts: %w", err)
+	}
+	if len(out) == 0 || out[0].Link == "" {
+		return "", false, nil
+	}
+	return out[0].Link, true, nil
+}
+
+// categoryArchiveURL returns the WP category archive URL (used as a slide fallback when the category has no
+// published posts). Relies on the categoryIDByLabelOrSlug cache, so when called right after newestPostInCategory
+// it makes no extra HTTP call.
+func (h *homepageClient) categoryArchiveURL(ctx context.Context, categoryKey string) (string, error) {
+	id, err := h.categoryIDByLabelOrSlug(ctx, categoryKey)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s/?cat=%d", h.base, id), nil
 }
 
 // reconcileNewsSection rebuilds the homepage news cards from the top-3 newest published posts in the given category.
