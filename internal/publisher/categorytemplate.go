@@ -64,7 +64,14 @@ func stripMarkersAndHashtags(text string) string {
 			b.WriteByte('\n')
 			continue
 		}
-		if hasAnyPrefix(t, router.TitleMarker, router.DateMarker, router.BodyMarker, router.SubtitleMarker) {
+		// The body marker labels the first body line — strip the 📝 but keep its text.
+		if strings.HasPrefix(t, router.BodyMarker) {
+			if t = strings.TrimSpace(strings.TrimPrefix(t, router.BodyMarker)); t == "" {
+				continue
+			}
+		}
+		// Title/date/subtitle live in their own fields — drop those lines entirely.
+		if hasAnyPrefix(t, router.TitleMarker, router.DateMarker, router.SubtitleMarker) {
 			continue
 		}
 		if isHashtagOnlyLine(t) {

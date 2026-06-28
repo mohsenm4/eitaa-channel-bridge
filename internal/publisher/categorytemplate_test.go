@@ -66,6 +66,21 @@ func TestParseSimpleReport_KeepsBodyDropsMarkersAndHashtags(t *testing.T) {
 	}
 }
 
+// Regression: when the channel writes the intro on the same line as 📝
+// (e.g. "📝 به لطف خداوند…"), that text is body content and must survive —
+// only the 📝 glyph itself is stripped.
+func TestParseSimpleReport_KeepsTextOnBodyMarkerLine(t *testing.T) {
+	msg := tavanmandRouted()
+	msg.Message.Text = "📌 گزارش\n📅 1404/08/15\n📝 به لطف خداوند متعال این گزارش تقدیم می‌گردد:\n📦 اعتبار خرید\n#توانمندسازی"
+	body := parseSimpleReport(msg, 0)["BODY"]
+	if !strings.Contains(body, "به لطف خداوند متعال این گزارش تقدیم می‌گردد:") {
+		t.Errorf("inline text on the 📝 line was dropped\n--- body ---\n%s", body)
+	}
+	if strings.Contains(body, "📝") {
+		t.Errorf("📝 marker leaked into body\n--- body ---\n%s", body)
+	}
+}
+
 func TestParseSimpleReport_DropsEverythingAfterHashtagLine(t *testing.T) {
 	msg := tavanmandRouted()
 	msg.Message.Text = tavanmandSampleMsg + "\n\n🔰 کانال رسمی موسسه خدمات اجتماعی فاطمیون\n🆔 https://eitaa.com/fatemyoon_ir\nهر خط دیگه‌ای بعد از هشتگ"
@@ -89,17 +104,17 @@ func TestRenderCategoryTemplate_TavanmandsaziEndToEnd(t *testing.T) {
 		"کارگاه آموزشی تربیت مربی",
 		"📅 تاریخ برگزاری: 1404/08/15",
 		`<h3 style="text-align: center;">کارگاه آموزشی تربیت مربی – آبان ۱۴۰۴</h3>`,
-		"[vc_row][vc_column][vc_column_text]",
+		"[vc_row][vc_column]",
 		"[/vc_column_text][/vc_column][/vc_row]",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q\n--- full output ---\n%s", want, out)
 		}
 	}
-	// Featured image must NOT be injected — the theme renders it from
-	// featured_media, not from a [vc_single_image] shortcode.
-	if strings.Contains(out, "vc_single_image") {
-		t.Errorf("vc_single_image should not appear in narrative template (theme handles featured_media)\n%s", out)
+	// Featured image IS injected as a [vc_single_image] shortcode so it shows
+	// inline in the report body (the theme does not render featured_media here).
+	if !strings.Contains(out, `[vc_single_image image="555" img_size="full" alignment="center"]`) {
+		t.Errorf("featured image shortcode missing for media 555\n%s", out)
 	}
 	if strings.Contains(out, "{{") {
 		t.Errorf("unfilled placeholder remains:\n%s", out)
@@ -229,7 +244,7 @@ func TestQarzAlHasaneh_RoutesToSimpleTemplateAndParser(t *testing.T) {
 	if !strings.Contains(out, "📅 تاریخ برگزاری: 1404/08/15") {
 		t.Errorf("date line missing in qarz output:\n%s", out)
 	}
-	if strings.Contains(out, "vc_single_image") {
-		t.Errorf("vc_single_image should not appear in simple qarz template:\n%s", out)
+	if !strings.Contains(out, `[vc_single_image image="888" img_size="full" alignment="center"]`) {
+		t.Errorf("featured image shortcode missing in qarz template:\n%s", out)
 	}
 }
