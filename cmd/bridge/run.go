@@ -294,7 +294,7 @@ func (r *runner) tick(ctx context.Context) {
 		return
 	}
 	r.warnIfSilentFetch(msgs)
-	r.syncEditsAndDeletes(ctx, msgs)
+	r.syncEditsAndDeletes(ctx, r.extendForSync(ctx, msgs))
 	// State is persisted per-message inside processOne; no end-of-tick save needed.
 	if n := r.processBatch(ctx, msgs); n == 0 {
 		r.log.Info("idle", "msg", "no new messages")
@@ -313,6 +313,52 @@ func (r *runner) warnIfSilentFetch(msgs []eitaa.Message) {
 	r.log.Warn("fetch returned zero messages while seen-set is non-empty — Eitaa markup may have changed",
 		"channel", r.cfg.Source.Channel,
 		"seen_count", seen)
+}
+
+// syncMaxPages caps ?before= walks per tick so a very old (or never-covered) tracked post can't turn a tick into a crawl.
+const syncMaxPages = 10
+
+// extendForSync pages back through ?before= until the fetched range covers every tracked post inside SyncWindow.
+// Without this, a post deleted after scrolling off Eitaa's first page is never compared and its WP copy lingers.
+// Pages are contiguous, so a partial walk (error / cap) still yields a safe range for syncEditsAndDeletes.
+func (r *runner) extendForSync(ctx context.Context, page []eitaa.Message) []eitaa.Message {
+	if len(page) == 0 || r.cfg.Source.SyncWindow <= 0 {
+		return page
+	}
+	ch := r.cfg.Source.Channel
+	oldest := r.store.OldestTrackedSince(ch, time.Now().Add(-r.cfg.Source.SyncWindow))
+	if oldest == 0 {
+		return page
+	}
+	all := page
+	minID := minMsgID(page)
+	for i := 0; i < syncMaxPages && oldest < minID; i++ {
+		fctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		older, err := r.client.FetchBefore(fctx, ch, minID)
+		cancel()
+		if err != nil {
+			r.log.Warn("sync page fetch failed — checking edits/deletes on a shorter range this tick",
+				"before", minID, "err", err)
+			break
+		}
+		if len(older) == 0 {
+			// Start of channel (or a parse miss): don't extend further rather than guess.
+			break
+		}
+		all = append(older, all...)
+		minID = minMsgID(older)
+	}
+	return all
+}
+
+func minMsgID(msgs []eitaa.Message) int {
+	minID := msgs[0].ID
+	for _, m := range msgs {
+		if m.ID < minID {
+			minID = m.ID
+		}
+	}
+	return minID
 }
 
 // syncEditsAndDeletes mirrors author edits/deletes from the source channel to WP for tracked messages still on the fetched page.
@@ -578,6 +624,7 @@ func runRun(log *slog.Logger, args []string) {
 		"poll_cold", cfg.Source.PollCold.String(),
 		"poll_hot", cfg.Source.PollHot.String(),
 		"edit_window", cfg.Source.EditWindow.String(),
+		"sync_window", cfg.Source.SyncWindow.String(),
 		"backfill_max", cfg.Source.BackfillMax,
 		"categories", strings.Join(categoryTags(cfg.Publishing.Categories), ","),
 		"inbox", strings.Join(cfg.Publishing.InboxHashtags, ","),
