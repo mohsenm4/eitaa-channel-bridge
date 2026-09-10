@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -143,12 +144,19 @@ func (p *WordPress) Update(ctx context.Context, postID int, msg router.Routed) e
 }
 
 // Delete sends the post to trash (force=false). The author can restore from WP if it was a mistake.
+// A post already trashed (410) or gone entirely (404) counts as done — someone beat us to it, and retrying forever
+// would just spam the log every tick.
 func (p *WordPress) Delete(ctx context.Context, postID int) error {
 	if postID <= 0 {
 		return fmt.Errorf("delete: invalid postID %d", postID)
 	}
 	_, err := p.do(ctx, http.MethodDelete, fmt.Sprintf("/wp-json/wp/v2/posts/%d", postID), nil)
 	if err != nil {
+		var se *httpStatusError
+		if errors.As(err, &se) && (se.status == http.StatusGone || se.status == http.StatusNotFound) {
+			p.log.Info("wordpress: post already trashed/removed — treating delete as done", "wp_id", postID, "status", se.status)
+			return nil
+		}
 		return fmt.Errorf("delete post %d: %w", postID, err)
 	}
 	p.log.Info("wordpress: deleted", "wp_id", postID)
@@ -314,9 +322,20 @@ func (p *WordPress) do(ctx context.Context, method, path string, body []byte) ([
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("WP %s %s: HTTP %d: %s", method, path, resp.StatusCode, snippet(respBody))
+		return nil, &httpStatusError{method: method, path: path, status: resp.StatusCode, body: snippet(respBody)}
 	}
 	return respBody, nil
+}
+
+// httpStatusError lets callers branch on the WP status code (errors.As) while keeping the same log text.
+type httpStatusError struct {
+	method, path string
+	status       int
+	body         string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("WP %s %s: HTTP %d: %s", e.method, e.path, e.status, e.body)
 }
 
 // ─── Categories ─────────────────────────────────────────────────────

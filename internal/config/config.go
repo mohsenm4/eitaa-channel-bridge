@@ -29,7 +29,11 @@ type Source struct {
 	// PollHot is the fast interval used while a tracked message is within EditWindow.
 	PollHot time.Duration
 	// EditWindow: how long after a message is published to keep polling fast for edits/deletes.
-	EditWindow  time.Duration
+	EditWindow time.Duration
+	// SyncWindow: how far back (by message date) published posts stay watched for edits/deletes. The bridge pages
+	// through ?before= until the fetched range covers every tracked post inside this window, so a deletion of a post
+	// that already scrolled off Eitaa's first page is still mirrored. Zero disables paging (first page only).
+	SyncWindow  time.Duration
 	BackfillMax int
 	// HealthcheckURL: dead-man's-switch ping target (e.g. healthchecks.io); empty disables.
 	HealthcheckURL string
@@ -93,6 +97,11 @@ func Load(envPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Source.EditWindow = ew
+	sw, err := envDuration("SYNC_WINDOW")
+	if err != nil {
+		return nil, err
+	}
+	cfg.Source.SyncWindow = sw
 	bm, err := envInt("BACKFILL")
 	if err != nil {
 		return nil, err
@@ -253,6 +262,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Source.EditWindow == 0 {
 		c.Source.EditWindow = 1 * time.Hour
+	}
+	if c.Source.SyncWindow == 0 {
+		c.Source.SyncWindow = 30 * 24 * time.Hour
 	}
 	if c.Source.HealthcheckInterval == 0 {
 		c.Source.HealthcheckInterval = 12 * time.Minute

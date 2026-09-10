@@ -172,6 +172,7 @@ All config is environment variables. Copy `.env.example` to `.env` and fill in v
 | `POLL_COLD` | `6h` | Slow poll interval when nothing recent is being watched |
 | `POLL_HOT` | `10s` | Fast poll interval while a tracked message is inside `EDIT_WINDOW` |
 | `EDIT_WINDOW` | `1h` | How long after publishing a message to keep polling fast. Keep larger than `POLL_COLD` |
+| `SYNC_WINDOW` | `720h` | How far back (by message date) published posts stay watched for edits/deletes; the bridge pages through `?before=` to cover it. Go duration — no `d` unit, so `1440h` = 60 days |
 | `BACKFILL` | `0` | On the first run only, walk back this many older messages via pagination |
 
 ### Publishing
@@ -226,6 +227,8 @@ The bridge uses two speeds to balance freshness and bandwidth:
 After every tick the bridge checks: is the freshest tracked message newer than `EDIT_WINDOW` ago? If yes → hot. If no → cold.
 
 **Important:** `EDIT_WINDOW` must be larger than `POLL_COLD`. If it is not, a fresh message discovered on a cold poll is already older than the window and hot mode never activates. The bridge prints a warning at startup if this constraint is violated. A safe rule of thumb: `EDIT_WINDOW ≥ 2 × POLL_COLD`.
+
+**Which posts are watched for edits/deletes:** every published post dated within `SYNC_WINDOW`. Eitaa's first page can be very short (a handful of messages), so on every tick the bridge pages back through `?before=` until the fetched range reaches the oldest watched post (capped at 10 pages per tick). A post deleted after it scrolled off the first page is therefore still trashed on WordPress. Posts older than the window are left alone.
 
 ---
 

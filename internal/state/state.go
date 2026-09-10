@@ -160,6 +160,22 @@ func (s *Store) TrackedInRange(channel string, minID, maxID int) []int {
 	return out
 }
 
+// OldestTrackedSince returns the smallest id among non-deleted published entries dated at/after since (0 if none) —
+// the lower bound the fetched range must reach for edit/deletion comparison to cover the sync window.
+func (s *Store) OldestTrackedSince(channel string, since time.Time) int {
+	oldest := 0
+	cut := since.Unix()
+	for id, e := range s.data[channel] {
+		if e.PostID <= 0 || e.Deleted || e.TS == 0 || e.TS < cut {
+			continue
+		}
+		if oldest == 0 || id < oldest {
+			oldest = id
+		}
+	}
+	return oldest
+}
+
 // LatestTrackedTS returns the newest TS among non-deleted published entries (zero time if none) for hot/cold polling.
 func (s *Store) LatestTrackedTS(channel string) time.Time {
 	var latest int64

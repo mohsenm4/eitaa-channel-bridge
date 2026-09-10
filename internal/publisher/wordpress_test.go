@@ -391,3 +391,29 @@ func TestApplyTemplate_SwapsOnlyFirstImage(t *testing.T) {
 		t.Error("old first image id should be gone")
 	}
 }
+
+func TestDelete_AlreadyTrashedIsSuccess(t *testing.T) {
+	for _, code := range []int{http.StatusGone, http.StatusNotFound} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(`{"code":"rest_already_trashed"}`))
+		}))
+		wp := NewWordPress(config.WordPressTarget{URL: srv.URL}, slog.Default())
+		err := wp.Delete(context.Background(), 19692)
+		srv.Close()
+		if err != nil {
+			t.Errorf("status %d: expected nil error, got %v", code, err)
+		}
+	}
+}
+
+func TestDelete_OtherErrorsStillFail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	wp := NewWordPress(config.WordPressTarget{URL: srv.URL}, slog.Default())
+	if err := wp.Delete(context.Background(), 1); err == nil {
+		t.Error("expected error on HTTP 500")
+	}
+}
