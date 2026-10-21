@@ -363,4 +363,4 @@ eitaa-channel-bridge/
 
 ## License
 
-Internal use — Meraj Cultural & Religious Institute.
+MIT — see [LICENSE](LICENSE).
