@@ -34,7 +34,7 @@ Originally built for the *Meraj Cultural & Religious Institute* ([@Merajyan](htt
 
 **Per-message pipeline:**
 
-1. Polls the channel page on a schedule (see [hot vs. cold](#6-how-hot-vs-cold-polling-works)).
+1. Polls the channel page on a schedule (see [hot vs. cold](#6-how-hot-vs-cold-polling-works)). If more new messages arrived than fit on Eitaa's first page, it walks back with `?before=` until it reaches the last message it has already seen (up to 10 pages per poll; beyond that the oldest ones are skipped and a warning is logged).
 2. For each new message:
    - Extracts hashtags, title, date, and body via emoji markers (see [Post format](#4-post-format-emoji-markers)).
    - Routes to a WP category based on hashtag. Drops messages with no match (or queues them for manual review).

@@ -294,11 +294,63 @@ func (r *runner) tick(ctx context.Context) {
 		return
 	}
 	r.warnIfSilentFetch(msgs)
-	r.syncEditsAndDeletes(ctx, r.extendForSync(ctx, msgs))
+	fetched, missed := r.catchUp(ctx, msgs)
+	r.syncEditsAndDeletes(ctx, r.extendForSync(ctx, fetched))
 	// State is persisted per-message inside processOne; no end-of-tick save needed.
-	if n := r.processBatch(ctx, msgs); n == 0 {
+	if n := r.processBatch(ctx, append(missed, msgs...)); n == 0 {
 		r.log.Info("idle", "msg", "no new messages")
 	}
+}
+
+// catchUpMaxPages caps the ?before= walk that recovers messages posted faster than one page per tick.
+const catchUpMaxPages = 10
+
+// catchUp pages back to the newest seen message so a burst bigger than Eitaa's first page isn't skipped (issue #7).
+func (r *runner) catchUp(ctx context.Context, page []eitaa.Message) (fetched, missed []eitaa.Message) {
+	fetched = page
+	lastSeen := r.store.MaxSeenID(r.cfg.Source.Channel)
+	if len(page) == 0 || lastSeen == 0 {
+		// Empty fetch or fresh install: keep the first-page-only behaviour.
+		return fetched, nil
+	}
+	minID := minMsgID(page)
+	pages := 0
+	for minID > lastSeen+1 && pages < catchUpMaxPages {
+		fctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		older, err := r.client.FetchBefore(fctx, r.cfg.Source.Channel, minID)
+		cancel()
+		if err != nil {
+			r.log.Warn("catch-up page fetch failed — older unseen messages may be skipped",
+				"before", minID, "last_seen", lastSeen, "err", err)
+			return fetched, missed
+		}
+		if len(older) == 0 {
+			break
+		}
+		pages++
+		fetched = append(older, fetched...)
+		missed = append(newerThan(older, lastSeen), missed...)
+		minID = minMsgID(older)
+	}
+	if pages == catchUpMaxPages && minID > lastSeen+1 {
+		r.log.Warn("catch-up hit its page cap — older unseen messages may be skipped",
+			"last_seen", lastSeen, "oldest_fetched", minID, "pages", pages)
+	}
+	if len(missed) > 0 {
+		r.log.Info("catch-up found messages beyond the first page", "count", len(missed), "pages", pages)
+	}
+	return fetched, missed
+}
+
+// newerThan keeps only the messages with an id above lastSeen, in their original order.
+func newerThan(msgs []eitaa.Message, lastSeen int) []eitaa.Message {
+	var out []eitaa.Message
+	for _, m := range msgs {
+		if m.ID > lastSeen {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // warnIfSilentFetch flags a likely Eitaa markup change: empty fetch with non-empty seen-set.

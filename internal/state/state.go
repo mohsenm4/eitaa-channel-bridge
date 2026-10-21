@@ -91,6 +91,17 @@ func (s *Store) Count(channel string) int {
 	return len(s.data[channel])
 }
 
+// MaxSeenID returns the highest message id recorded for the channel (0 if none).
+func (s *Store) MaxSeenID(channel string) int {
+	highest := 0
+	for id := range s.data[channel] {
+		if id > highest {
+			highest = id
+		}
+	}
+	return highest
+}
+
 // Mark records a message as seen with no metadata (skipped / inbox / post-less targets).
 func (s *Store) Mark(channel string, id int) {
 	s.ensure(channel)

@@ -32,6 +32,26 @@ func TestLoadLegacyFormat(t *testing.T) {
 	}
 }
 
+func TestMaxSeenID(t *testing.T) {
+	s, err := Load(filepath.Join(t.TempDir(), "seen.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.MaxSeenID("ch"); got != 0 {
+		t.Errorf("empty store: MaxSeenID = %d, want 0", got)
+	}
+	s.Mark("ch", 5)
+	s.MarkPublished("ch", 12, 100, "fp", time.Now())
+	s.Mark("ch", 9)
+	s.MarkDeleted("ch", 12)
+	if got := s.MaxSeenID("ch"); got != 12 {
+		t.Errorf("MaxSeenID = %d, want 12 (deleted entries still count as seen)", got)
+	}
+	if got := s.MaxSeenID("other"); got != 0 {
+		t.Errorf("unknown channel: MaxSeenID = %d, want 0", got)
+	}
+}
+
 func TestRoundTripNewFormat(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "seen.json")
