@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,14 +25,10 @@ type homepageClient struct {
 
 func newHomepageClient(wpURL, user, pass string) *homepageClient {
 	return &homepageClient{
-		base: strings.TrimRight(wpURL, "/"),
-		user: user,
-		pass: pass,
-		httpc: &http.Client{
-			Timeout: 30 * time.Second,
-			// fatemyoon.ir's TLS cert is expired (same workaround as the publisher).
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
-		},
+		base:       strings.TrimRight(wpURL, "/"),
+		user:       user,
+		pass:       pass,
+		httpc:      &http.Client{Timeout: 30 * time.Second},
 		catIDCache: map[string]int{},
 	}
 }

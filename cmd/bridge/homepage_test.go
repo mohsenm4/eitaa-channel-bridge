@@ -278,3 +278,16 @@ func TestProcessOne_NoHomepageClient_NoCalls(t *testing.T) {
 		t.Errorf("expected zero calls, got %d", got)
 	}
 }
+
+func TestHomepageClient_RejectsUntrustedCertificate(t *testing.T) {
+	// Same rule as the publisher: no request (and no app password) to a host whose certificate doesn't verify.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"show_on_front":"page","page_on_front":7}`))
+	}))
+	defer srv.Close()
+
+	h := newHomepageClient(srv.URL, "u", "p")
+	if _, err := h.detectFrontPageID(context.Background()); err == nil {
+		t.Fatal("expected a certificate error from a self-signed server, got none")
+	}
+}

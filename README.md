@@ -357,7 +357,6 @@ eitaa-channel-bridge/
 - **Unofficial parser.** Eitaa has no documented public API. The bridge parses the public channel HTML page. If Eitaa changes its markup the parser will need updating.
 - **Public channels only.** Private groups and channels are not accessible.
 - **Visible page only.** Edit and delete detection only covers the ~20 most recent messages that Eitaa renders on the channel page. Older messages that scroll off cannot be re-checked.
-- **TLS.** The bridge currently skips TLS certificate verification for the target WP site (workaround for an expired cert on fatemyoon.ir). A warning is logged at startup.
 
 ---
 

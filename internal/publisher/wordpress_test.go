@@ -417,3 +417,16 @@ func TestDelete_OtherErrorsStillFail(t *testing.T) {
 		t.Error("expected error on HTTP 500")
 	}
 }
+
+func TestNewWordPress_RejectsUntrustedCertificate(t *testing.T) {
+	// A self-signed server must fail: certificate checks are on, so the app password never goes to an unverified host.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	p := NewWordPress(config.WordPressTarget{URL: srv.URL, Username: "u", AppPassword: "p"}, slog.Default())
+	if _, err := p.do(context.Background(), http.MethodGet, "/wp-json/wp/v2/categories", nil); err == nil {
+		t.Fatal("expected a certificate error from a self-signed server, got none")
+	}
+}
