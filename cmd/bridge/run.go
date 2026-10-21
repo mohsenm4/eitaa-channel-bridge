@@ -39,6 +39,9 @@ type runner struct {
 	// publishFailStreak crosses HealthcheckFailureThreshold → ping /fail. Alerted suppresses duplicate pings.
 	publishFailStreak  int
 	publishFailAlerted bool
+
+	// syncBrakeAlerted suppresses repeat /fail pings while the sync brake stays engaged.
+	syncBrakeAlerted bool
 }
 
 func newRunner(cfg *config.Config, log *slog.Logger) (*runner, error) {
@@ -380,6 +383,9 @@ func (r *runner) syncEditsAndDeletes(ctx context.Context, msgs []eitaa.Message) 
 	if len(tracked) == 0 {
 		return
 	}
+	if r.syncBrakeEngaged(ctx, tracked, fetched) {
+		return
+	}
 
 	for _, id := range tracked {
 		entry := r.store.Get(r.cfg.Source.Channel, id)
@@ -389,6 +395,37 @@ func (r *runner) syncEditsAndDeletes(ctx context.Context, msgs []eitaa.Message) 
 			r.syncDeletion(ctx, id, entry)
 		}
 	}
+}
+
+// syncBrakeEngaged refuses a tick that would trash or rewrite more posts than allowed (usually a parser glitch).
+func (r *runner) syncBrakeEngaged(ctx context.Context, tracked []int, fetched map[int]eitaa.Message) bool {
+	var deletes, edits []int
+	for _, id := range tracked {
+		m, ok := fetched[id]
+		if !ok {
+			deletes = append(deletes, id)
+			continue
+		}
+		if fp := r.store.Get(r.cfg.Source.Channel, id).FP; fp != "" && fp != fingerprint(m.Text) {
+			edits = append(edits, id)
+		}
+	}
+	maxDeletes, maxEdits := r.cfg.Source.SyncMaxDeletes, r.cfg.Source.SyncMaxEdits
+	tooManyDeletes := maxDeletes > 0 && len(deletes) > maxDeletes
+	tooManyEdits := maxEdits > 0 && len(edits) > maxEdits
+	if !tooManyDeletes && !tooManyEdits {
+		r.syncBrakeAlerted = false
+		return false
+	}
+	r.log.Error("sync brake engaged — too many deletes/edits in one tick, nothing applied",
+		"deletes", len(deletes), "max_deletes", maxDeletes, "edits", len(edits), "max_edits", maxEdits,
+		"delete_ids", deletes, "edit_ids", edits,
+		"hint", "if these changes are real, raise SYNC_MAX_DELETES / SYNC_MAX_EDITS and restart")
+	if !r.syncBrakeAlerted {
+		r.pingHealthcheckFail(ctx)
+		r.syncBrakeAlerted = true
+	}
+	return true
 }
 
 // maybeSyncEdit Updates the target when the fetched fingerprint differs; stored FP advances only on success.

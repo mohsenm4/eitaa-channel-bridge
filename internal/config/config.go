@@ -35,6 +35,10 @@ type Source struct {
 	// that already scrolled off Eitaa's first page is still mirrored. Zero disables paging (first page only).
 	SyncWindow  time.Duration
 	BackfillMax int
+	// SyncMaxDeletes: a tick that would trash more posts than this applies nothing and alerts (usually a parser glitch).
+	SyncMaxDeletes int
+	// SyncMaxEdits: a tick that would rewrite more posts than this applies nothing and alerts.
+	SyncMaxEdits int
 	// HealthcheckURL: dead-man's-switch ping target (e.g. healthchecks.io); empty disables.
 	HealthcheckURL string
 	// HealthcheckInterval: must be shorter than the configured dead-man's-switch Period to survive a single missed ping.
@@ -102,6 +106,16 @@ func Load(envPath string) (*Config, error) {
 		return nil, err
 	}
 	cfg.Source.SyncWindow = sw
+	smd, err := envInt("SYNC_MAX_DELETES")
+	if err != nil {
+		return nil, err
+	}
+	cfg.Source.SyncMaxDeletes = smd
+	sme, err := envInt("SYNC_MAX_EDITS")
+	if err != nil {
+		return nil, err
+	}
+	cfg.Source.SyncMaxEdits = sme
 	bm, err := envInt("BACKFILL")
 	if err != nil {
 		return nil, err
@@ -266,6 +280,12 @@ func (c *Config) applyDefaults() {
 	if c.Source.SyncWindow == 0 {
 		c.Source.SyncWindow = 30 * 24 * time.Hour
 	}
+	if c.Source.SyncMaxDeletes == 0 {
+		c.Source.SyncMaxDeletes = 3
+	}
+	if c.Source.SyncMaxEdits == 0 {
+		c.Source.SyncMaxEdits = 5
+	}
 	if c.Source.HealthcheckInterval == 0 {
 		c.Source.HealthcheckInterval = 12 * time.Minute
 	}
@@ -305,6 +325,9 @@ func (c *Config) validate() error {
 			"warning: EDIT_WINDOW (%s) is shorter than POLL_COLD (%s) — hot mode will rarely activate "+
 				"because messages age past the window before the next cold poll sees them.\n",
 			c.Source.EditWindow, c.Source.PollCold)
+	}
+	if c.Source.SyncMaxDeletes < 0 || c.Source.SyncMaxEdits < 0 {
+		return errors.New("SYNC_MAX_DELETES and SYNC_MAX_EDITS must not be negative")
 	}
 	if c.Source.HealthcheckURL != "" {
 		if _, err := url.Parse(c.Source.HealthcheckURL); err != nil {
