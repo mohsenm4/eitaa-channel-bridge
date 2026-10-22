@@ -3,7 +3,6 @@ package publisher
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,13 +34,10 @@ func NewWordPress(cfg config.WordPressTarget, log *slog.Logger) *WordPress {
 	if log == nil {
 		log = slog.Default()
 	}
-	// TODO: drop InsecureSkipVerify once fatemyoon.ir renews its TLS cert.
-	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	log.Warn("wordpress: TLS verification disabled (site cert expired)", "url", cfg.URL)
 	return &WordPress{
 		cfg:  cfg,
 		log:  log,
-		http: &http.Client{Timeout: 30 * time.Second, Transport: tr},
+		http: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
